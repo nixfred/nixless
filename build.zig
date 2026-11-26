@@ -42,6 +42,19 @@ pub fn build(b: *std.Build) void {
     kmod.addAssemblyFile(b.path("src/ap.S"));
 
     const kernel = b.addExecutable(.{ .name = "nixless.elf", .root_module = kmod, .use_llvm = true });
+    // The SIMD self-tests need an assembler that accepts AVX2 and AVX-512, so they
+    // are their own object built for a richer CPU; the kernel proper stays SSE-free.
+    var simd_on = std.Target.Cpu.Feature.Set.empty;
+    for ([_]F{ .avx, .avx2, .avx512f, .avx512bw, .avx512vl }) |f| simd_on.addFeature(@intFromEnum(f));
+    const simd_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_features_add = simd_on,
+    });
+    const simd_mod = b.createModule(.{ .target = simd_target, .optimize = optimize });
+    simd_mod.addAssemblyFile(b.path("src/simd.S"));
+    kmod.addObject(b.addObject(.{ .name = "simd", .root_module = simd_mod }));
     kernel.setLinkerScript(b.path("linker.ld"));
     b.installArtifact(kernel);
 

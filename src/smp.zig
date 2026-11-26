@@ -5,6 +5,7 @@
 const std = @import("std");
 const acpi = @import("acpi.zig");
 const clock = @import("clock.zig");
+const cpuinfo = @import("cpuinfo.zig");
 const cpu = @import("cpu.zig");
 const gdt = @import("gdt.zig");
 const idt = @import("idt.zig");
@@ -41,6 +42,7 @@ fn sliceSum(index: usize) u64 {
 }
 
 fn runWork(index: usize) void {
+    cpuinfo.selfTest();
     results[index] = sliceSum(index);
 }
 
@@ -52,6 +54,7 @@ export fn ap_entry() callconv(.c) noreturn {
     idt.load();
     cpu.setCr0(cpu.cr0() | (1 << 16)); // WP, as on the BSP
     lapic.initAp();
+    cpuinfo.enableSimdState();
     _ = online.fetchAdd(1, .acq_rel);
 
     // Park: HLT with interrupts enabled, wake on the IPI, look for work.

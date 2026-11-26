@@ -14,6 +14,7 @@ const acpi = @import("acpi.zig");
 const clock = @import("clock.zig");
 const lapic = @import("lapic.zig");
 const smp = @import("smp.zig");
+const cpuinfo = @import("cpuinfo.zig");
 
 fn timerFired() bool {
     return lapic.timer_fired != 0;
@@ -66,6 +67,9 @@ export fn kmain(mb2_info: u32) callconv(.c) noreturn {
     serial.write("nixless " ++ build_options.version ++ " " ++ build_options.git_hash ++ " booting\n");
     gdt.init();
     idt.init();
+    cpuinfo.probe();
+    cpuinfo.enableSimdState();
+    cpuinfo.print();
     const info = mb2.parse(mb2_info);
     mb2.printMemory(info);
     pmm.init(info);
