@@ -46,8 +46,15 @@ const Gdt = extern struct {
 
 const Gdtr = packed struct { limit: u16, base: u64 };
 
-var tss: Tss align(16) = .{};
-var gdt: Gdt align(16) = .{};
+/// One GDT and one TSS per CPU: loading a TSS marks its descriptor busy, so
+/// CPUs cannot share one.
+pub const PerCpu = struct {
+    gdt: Gdt align(16) = .{},
+    tss: Tss align(16) = .{},
+};
+
+var bsp: PerCpu = .{};
+
 // Each slot is a 4 KiB guard page (left unmapped by vmm) then the stack.
 const IST_SLOT = 4096 + IST_STACK_SIZE;
 var ist_area: [3 * IST_SLOT]u8 align(4096) = undefined;
@@ -61,20 +68,17 @@ fn istTop(i: usize) u64 {
     return @intFromPtr(&ist_area) + (i + 1) * IST_SLOT;
 }
 
-pub fn init() void {
-    tss.ist1 = istTop(0); // double fault
-    tss.ist2 = istTop(1); // NMI
-    tss.ist3 = istTop(2); // machine check
-    const base = @intFromPtr(&tss);
+fn load(pc: *PerCpu) void {
+    const base = @intFromPtr(&pc.tss);
     const limit: u64 = 104 - 1;
-    gdt.tss_lo = (limit & 0xFFFF) |
+    pc.gdt.tss_lo = (limit & 0xFFFF) |
         ((base & 0xFFFFFF) << 16) |
         (@as(u64, 0x89) << 40) | // present, 64-bit TSS (available)
         (((limit >> 16) & 0xF) << 48) |
         (((base >> 24) & 0xFF) << 56);
-    gdt.tss_hi = base >> 32;
+    pc.gdt.tss_hi = base >> 32;
 
-    const gdtr: Gdtr = .{ .limit = @sizeOf(Gdt) - 1, .base = @intFromPtr(&gdt) };
+    const gdtr: Gdtr = .{ .limit = @sizeOf(Gdt) - 1, .base = @intFromPtr(&pc.gdt) };
     asm volatile (
         \\lgdt (%[g])
         \\pushq %[cs]
@@ -97,4 +101,22 @@ pub fn init() void {
           [ds] "i" (KERNEL_DS),
           [tr] "i" (TSS_SEL),
         : .{ .rax = true, .memory = true });
+}
+
+/// Boot CPU: three separate IST stacks (double fault, NMI, machine check).
+pub fn init() void {
+    bsp.tss.ist1 = istTop(0);
+    bsp.tss.ist2 = istTop(1);
+    bsp.tss.ist3 = istTop(2);
+    load(&bsp);
+}
+
+/// Application CPU: `pc` lives in memory the caller allocated. One IST stack
+/// serves all three vectors (they are all fatal in M1).
+pub fn initAp(pc: *PerCpu, ist_top: u64) void {
+    pc.* = .{};
+    pc.tss.ist1 = ist_top;
+    pc.tss.ist2 = ist_top;
+    pc.tss.ist3 = ist_top;
+    load(pc);
 }

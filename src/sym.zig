@@ -23,6 +23,16 @@ pub inline fn kernelEnd() u64 {
         : [r] "=r" (-> u64),
     );
 }
+pub inline fn apTrampStart() u64 {
+    return asm ("leaq ap_tramp_start(%%rip), %[r]"
+        : [r] "=r" (-> u64),
+    );
+}
+pub inline fn apTrampEnd() u64 {
+    return asm ("leaq ap_tramp_end(%%rip), %[r]"
+        : [r] "=r" (-> u64),
+    );
+}
 pub inline fn bootStackGuard() u64 {
     return asm ("leaq boot_stack_guard(%%rip), %[r]"
         : [r] "=r" (-> u64),

@@ -52,6 +52,12 @@ pub fn uptimeUs() u64 {
     return (rdtsc() - tsc_at_entry) * 1000 / tsc_khz;
 }
 
+/// Busy-wait. Boot-time only (INIT-SIPI timing); bounded by construction.
+pub fn delayUs(us: u64) void {
+    const end = rdtsc() + usToTsc(us);
+    while (rdtsc() < end) cpu.pause();
+}
+
 pub fn usToTsc(us: u64) u64 {
     return us * tsc_khz / 1000;
 }

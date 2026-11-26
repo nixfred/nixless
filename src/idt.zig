@@ -53,6 +53,11 @@ pub fn init() void {
             .offset_hi = @truncate(h >> 32),
         };
     }
+    load();
+}
+
+/// Load the shared IDT on the calling CPU.
+pub fn load() void {
     const idtr: Idtr = .{ .limit = @sizeOf(@TypeOf(idt)) - 1, .base = @intFromPtr(&idt) };
     asm volatile ("lidt (%[p])"
         :

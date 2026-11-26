@@ -13,6 +13,7 @@ const vmm = @import("vmm.zig");
 const acpi = @import("acpi.zig");
 const clock = @import("clock.zig");
 const lapic = @import("lapic.zig");
+const smp = @import("smp.zig");
 
 fn timerFired() bool {
     return lapic.timer_fired != 0;
@@ -87,6 +88,9 @@ export fn kmain(mb2_info: u32) callconv(.c) noreturn {
     serial.write("timer: one-shot fired after ");
     serial.dec(dt);
     serial.write(" us (asked 10000), woke from HLT\n");
+
+    smp.start(&a);
+    smp.parallelSumTest();
     panicTest(build_options.panic_test);
     cpu.haltForever();
 }

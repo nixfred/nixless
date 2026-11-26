@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
     kmod.addImport("build_options", opts.createModule());
     kmod.addAssemblyFile(b.path("src/boot.S"));
     kmod.addAssemblyFile(b.path("src/isr.S"));
+    kmod.addAssemblyFile(b.path("src/ap.S"));
 
     const kernel = b.addExecutable(.{ .name = "nixless.elf", .root_module = kmod, .use_llvm = true });
     kernel.setLinkerScript(b.path("linker.ld"));

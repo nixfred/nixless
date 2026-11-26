@@ -113,6 +113,30 @@ pub fn alloc() ?u64 {
     return null;
 }
 
+/// `n` physically contiguous frames below 4 GiB, not zeroed. Returns the base.
+pub fn allocContig(n: u64) ?u64 {
+    var f: u64 = 256; // skip low 1 MiB
+    const limit = @min(frames, 0x1_0000_0000 / FRAME);
+    while (f + n <= limit) {
+        var ok = true;
+        var k: u64 = 0;
+        while (k < n) : (k += 1) {
+            if (isUsed(f + k)) {
+                f = f + k + 1;
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            k = 0;
+            while (k < n) : (k += 1) setUsed(f + k);
+            free_frames -= n;
+            return f * FRAME;
+        }
+    }
+    return null;
+}
+
 /// Highest free frame (any address), not zeroed. For the direct-map self test.
 pub fn allocTop() ?u64 {
     var f = frames;

@@ -16,7 +16,9 @@ banner=${EXPECT:-'nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'}
 # ALIVE_AFTER=1 also requires QEMU still running a second later (halted, not reset).
 
 # CHECKPOINTS: extra lines that must also appear (one per line), added per milestone.
-checkpoints=${CHECKPOINTS-$'mem: usable\npmm: \nvmm: direct map ok\nacpi: \ntsc: \nlapic: \ntimer: one-shot fired'}
+default_cp=$(printf '%s\n' 'mem: usable' 'pmm: ' 'vmm: direct map ok' 'acpi: ' 'tsc: ' 'lapic: ' \
+    'timer: one-shot fired' "smp: ${SMP:-1} cores online" "smp: parallel sum ok on ${SMP:-1} cores")
+checkpoints=${CHECKPOINTS-$default_cp}
 
 [ -r "$iso" ] || { echo "no ISO at $iso (run: zig build iso)"; exit 2; }
 mkdir -p "$out"
@@ -27,7 +29,7 @@ for fw in "$@"; do
     tag=${LOG_TAG:-$fw}
     log="$out/$tag.log"
     : >"$log"
-    args=(-machine q35 -smp 1 -m ${MEM:-256} -cdrom "$iso" -boot d
+    args=(-machine q35 -smp ${SMP:-1} -m ${MEM:-256} -cdrom "$iso" -boot d
           -display none -no-reboot -serial "file:$log")
     # KVM when this user may use it, else TCG (slow, fine for M0).
     if [ -w /dev/kvm ]; then args+=(-enable-kvm -cpu host); else args+=(-cpu max); fi

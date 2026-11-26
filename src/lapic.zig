@@ -93,6 +93,31 @@ pub fn armOneShotUs(us: u64) void {
     }
 }
 
+/// Enable the LAPIC on an application CPU (the BSP did the shared setup).
+pub fn initAp() void {
+    cpu.wrmsr(IA32_APIC_BASE, (cpu.rdmsr(IA32_APIC_BASE) & ~@as(u64, 0xFFFFF000)) | (base & 0xFFFFF000) | (1 << 11));
+    write(REG_SVR, @as(u32, 0x100) | VEC_SPURIOUS);
+}
+
+const REG_ICR_LO = 0x300;
+const REG_ICR_HI = 0x310;
+
+/// Send an IPI. `low` is the ICR low word (delivery mode, vector, level).
+pub fn sendIpi(dest_apic_id: u32, low: u32) void {
+    write(REG_ICR_HI, dest_apic_id << 24);
+    write(REG_ICR_LO, low);
+    var n: u32 = 0;
+    while (read(REG_ICR_LO) & 0x1000 != 0 and n < 1_000_000) : (n += 1) cpu.pause();
+}
+
+pub const ICR_INIT: u32 = 0x4500;
+pub fn icrSipi(page: u8) u32 {
+    return 0x4600 | @as(u32, page);
+}
+pub fn icrFixed(vector: u8) u32 {
+    return 0x4000 | @as(u32, vector);
+}
+
 pub fn onTimer() void {
     timer_fired += 1;
     eoi();

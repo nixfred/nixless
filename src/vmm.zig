@@ -74,6 +74,34 @@ fn classify(base: u64, end: u64, info: mb2.Info) Kind {
     return .none;
 }
 
+/// AP trampoline page: the one RWX page, because the AP executes it with
+/// paging on for one instruction (mode switch) before jumping into the kernel.
+pub const TRAMPOLINE: u64 = 0x8000;
+
+/// Unmap one 4 KiB page, splitting a 2 MiB mapping if needed (guard pages).
+pub fn unmap4k(va: u64) void {
+    const pd = pdFor(va);
+    const idx: usize = @intCast((va >> 21) & 511);
+    const e = pd[idx];
+    if (e & P != 0 and e & PS != 0) {
+        const pt: [*]u64 = @ptrFromInt(pmm.alloc() orelse @panic("E_OOM: no frame to split a 2 MiB page"));
+        const flags = e & ~(PS | ADDR_MASK | (@as(u64, 1) << 12));
+        const base = e & 0x000F_FFFF_FFE0_0000;
+        for (0..512) |i| pt[i] = (base + i * 0x1000) | flags;
+        pd[idx] = @intFromPtr(pt) | P | RW;
+    }
+    const pt = table(pd, idx);
+    pt[@intCast((va >> 12) & 511)] = 0;
+    asm volatile ("invlpg (%[a])"
+        :
+        : [a] "r" (va),
+        : .{ .memory = true });
+}
+
+pub fn cr3Value() u64 {
+    return @intFromPtr(pml4);
+}
+
 pub fn init(info: mb2.Info) void {
     const kstart: u64 = sym.kernelStart();
     const text_end: u64 = sym.textEnd();
@@ -96,6 +124,7 @@ pub fn init(info: mb2.Info) void {
         if (pa >= kstart and pa < text_end) flags = 0 // text: read + execute
         else if (pa >= text_end and pa < rodata_end) flags = NX; // rodata: read only
         if (isGuardAddr(pa)) continue;
+        if (pa == TRAMPOLINE) flags = RW; // executable on purpose, see above
         map4k(pa, pa, flags);
     }
 

@@ -113,6 +113,10 @@ pub inline fn sleepUntil(comptime cond: fn () bool) void {
     }
 }
 
+pub inline fn pause() void {
+    asm volatile ("pause");
+}
+
 pub inline fn disableInterrupts() void {
     asm volatile ("cli");
 }
