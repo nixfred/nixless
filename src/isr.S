@@ -91,7 +91,16 @@ isr_common:
     addq $16, %rsp
     iretq
 
+isr_noerr 64
+isr_noerr 65
+isr_noerr 255
+
 .section .rodata
+.align 8
+.global isr_irq_table
+isr_irq_table:
+    .quad isr_64, isr_65, isr_255
+
 .align 8
 .global isr_table
 isr_table:

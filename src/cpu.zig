@@ -92,6 +92,27 @@ pub inline fn cpuid(leaf: u32, sub: u32) CpuidResult {
     return .{ .eax = a, .ebx = b, .ecx = c, .edx = d };
 }
 
+pub inline fn inl(port: u16) u32 {
+    return asm volatile ("inl %[p], %[r]"
+        : [r] "={eax}" (-> u32),
+        : [p] "{dx}" (port),
+    );
+}
+
+pub inline fn enableInterrupts() void {
+    asm volatile ("sti" ::: .{ .memory = true });
+}
+
+/// Sleep until an interrupt arrives, unless `cond` is already true.
+/// `sti; hlt` cannot lose a wakeup: STI takes effect after the next instruction.
+pub inline fn sleepUntil(comptime cond: fn () bool) void {
+    while (true) {
+        asm volatile ("cli" ::: .{ .memory = true });
+        if (cond()) return;
+        asm volatile ("sti; hlt" ::: .{ .memory = true });
+    }
+}
+
 pub inline fn disableInterrupts() void {
     asm volatile ("cli");
 }

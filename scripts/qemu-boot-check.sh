@@ -16,7 +16,7 @@ banner=${EXPECT:-'nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'}
 # ALIVE_AFTER=1 also requires QEMU still running a second later (halted, not reset).
 
 # CHECKPOINTS: extra lines that must also appear (one per line), added per milestone.
-checkpoints=${CHECKPOINTS-$'mem: usable\npmm: \nvmm: direct map ok'}
+checkpoints=${CHECKPOINTS-$'mem: usable\npmm: \nvmm: direct map ok\nacpi: \ntsc: \nlapic: \ntimer: one-shot fired'}
 
 [ -r "$iso" ] || { echo "no ISO at $iso (run: zig build iso)"; exit 2; }
 mkdir -p "$out"

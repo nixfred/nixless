@@ -2,6 +2,7 @@
 //! are fatal in M1 and go to the panic procedure (PRD 6b).
 const gdt = @import("gdt.zig");
 const panic_mod = @import("panic.zig");
+const lapic = @import("lapic.zig");
 
 const Entry = extern struct {
     offset_lo: u16 = 0,
@@ -16,6 +17,7 @@ const Entry = extern struct {
 const Idtr = packed struct { limit: u16, base: u64 };
 
 extern const isr_table: [32]u64;
+extern const isr_irq_table: [3]u64;
 
 var idt: [256]Entry align(16) = [_]Entry{.{}} ** 256;
 
@@ -36,6 +38,17 @@ pub fn init() void {
             .selector = gdt.KERNEL_CS,
             .ist = istFor(v),
             .type_attr = 0x8E, // present, DPL 0, 64-bit interrupt gate
+            .offset_mid = @truncate(h >> 16),
+            .offset_hi = @truncate(h >> 32),
+        };
+    }
+    const irq_vectors = [3]u8{ lapic.VEC_TIMER, lapic.VEC_WAKE, lapic.VEC_SPURIOUS };
+    for (irq_vectors, 0..) |v, i| {
+        const h = isr_irq_table[i];
+        idt[v] = .{
+            .offset_lo = @truncate(h),
+            .selector = gdt.KERNEL_CS,
+            .type_attr = 0x8E,
             .offset_mid = @truncate(h >> 16),
             .offset_hi = @truncate(h >> 32),
         };
@@ -74,5 +87,10 @@ pub const Frame = extern struct {
 };
 
 export fn exception_dispatch(frame: *Frame) callconv(.c) void {
-    panic_mod.exceptionPanic(frame);
+    switch (frame.vector) {
+        lapic.VEC_TIMER => lapic.onTimer(),
+        lapic.VEC_WAKE => lapic.eoi(),
+        lapic.VEC_SPURIOUS => {}, // spurious: no EOI
+        else => panic_mod.exceptionPanic(frame),
+    }
 }

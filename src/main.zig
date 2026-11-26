@@ -10,6 +10,13 @@ const mb2 = @import("mb2.zig");
 const panic_mod = @import("panic.zig");
 const pmm = @import("pmm.zig");
 const vmm = @import("vmm.zig");
+const acpi = @import("acpi.zig");
+const clock = @import("clock.zig");
+const lapic = @import("lapic.zig");
+
+fn timerFired() bool {
+    return lapic.timer_fired != 0;
+}
 
 const sym = @import("sym.zig");
 
@@ -53,6 +60,7 @@ fn panicTest(kind: []const u8) void {
 }
 
 export fn kmain(mb2_info: u32) callconv(.c) noreturn {
+    clock.markEntry();
     serial.init();
     serial.write("nixless " ++ build_options.version ++ " " ++ build_options.git_hash ++ " booting\n");
     gdt.init();
@@ -64,6 +72,21 @@ export fn kmain(mb2_info: u32) callconv(.c) noreturn {
     gdt.registerGuards(&vmm.registerGuard);
     vmm.init(info);
     vmm.selfTest();
+
+    const a = (if (info.rsdp) |r| acpi.parse(r) else null) orelse @panic("E_NO_ACPI: no usable RSDP");
+    acpi.print(&a);
+    if (!clock.calibrate(a.pm_timer_port, a.pm_timer_32bit)) @panic("E_NO_TSC: PM timer calibration failed");
+    clock.print();
+
+    // Interrupt-driven idle (PRD 0b): arm a single one-shot, HLT, wake on the IRQ.
+    lapic.init(a.lapic_addr);
+    const t0 = clock.uptimeUs();
+    lapic.armOneShotUs(10_000);
+    cpu.sleepUntil(timerFired);
+    const dt = clock.uptimeUs() - t0;
+    serial.write("timer: one-shot fired after ");
+    serial.dec(dt);
+    serial.write(" us (asked 10000), woke from HLT\n");
     panicTest(build_options.panic_test);
     cpu.haltForever();
 }
