@@ -23,6 +23,8 @@ pub fn build(b: *std.Build) void {
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", zon.version);
     opts.addOption([]const u8, "git_hash", git_hash);
+    const panic_test = b.option([]const u8, "panic-test", "Deliberate fault after boot: pf, de, ud, df or assert") orelse "";
+    opts.addOption([]const u8, "panic_test", panic_test);
 
     const kmod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -32,9 +34,11 @@ pub fn build(b: *std.Build) void {
         .red_zone = false,
         .single_threaded = true,
         .unwind_tables = .none,
+        .omit_frame_pointer = false, // panic backtraces walk rbp
     });
     kmod.addImport("build_options", opts.createModule());
     kmod.addAssemblyFile(b.path("src/boot.S"));
+    kmod.addAssemblyFile(b.path("src/isr.S"));
 
     const kernel = b.addExecutable(.{ .name = "nixless.elf", .root_module = kmod, .use_llvm = true });
     kernel.setLinkerScript(b.path("linker.ld"));

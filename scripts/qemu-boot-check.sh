@@ -11,7 +11,9 @@ timeout_s=${BOOT_TIMEOUT:-20}
 out=${BOOT_LOG_DIR:-bootlogs}
 ovmf_code=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
-banner='nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'
+banner=${EXPECT:-'nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'}
+# EXPECT overrides the pattern; ALLOW_PANIC=1 lets PANIC/FATAL through (panic tests);
+# ALIVE_AFTER=1 also requires QEMU still running a second later (halted, not reset).
 
 [ -r "$iso" ] || { echo "no ISO at $iso (run: zig build iso)"; exit 2; }
 mkdir -p "$out"
@@ -19,7 +21,8 @@ mkdir -p "$out"
 
 fail=0
 for fw in "$@"; do
-    log="$out/$fw.log"
+    tag=${LOG_TAG:-$fw}
+    log="$out/$tag.log"
     : >"$log"
     args=(-machine q35 -smp 1 -m 256 -cdrom "$iso" -boot d
           -display none -no-reboot -serial "file:$log")
@@ -36,7 +39,7 @@ for fw in "$@"; do
     *) echo "unknown firmware: $fw"; exit 2 ;;
     esac
 
-    nice -n 10 qemu-system-x86_64 "${args[@]}" >"$out/$fw.qemu.err" 2>&1 &
+    nice -n 10 qemu-system-x86_64 "${args[@]}" >"$out/$tag.qemu.err" 2>&1 &
     qpid=$!
     seen=0
     for _ in $(seq 1 $((timeout_s * 5))); do
@@ -44,14 +47,19 @@ for fw in "$@"; do
         kill -0 "$qpid" 2>/dev/null || break
         sleep 0.2
     done
+    alive=1
+    if [ "${ALIVE_AFTER:-0}" = 1 ] && [ $seen = 1 ]; then
+        sleep 1
+        kill -0 "$qpid" 2>/dev/null || alive=0
+    fi
     kill "$qpid" 2>/dev/null
     wait "$qpid" 2>/dev/null
     [ "${vars:-}" ] && rm -f "$vars" && vars=
 
-    if [ $seen = 1 ] && ! grep -qE 'PANIC|FATAL' "$log"; then
+    if [ $seen = 1 ] && [ $alive = 1 ] && { [ "${ALLOW_PANIC:-0}" = 1 ] || ! grep -qE 'PANIC|FATAL' "$log"; }; then
         echo "PASS $fw: $(grep -E "$banner" "$log" | tr -d '\r')"
     else
-        echo "FAIL $fw (log: $log)"; sed 's/^/    qemu: /' "$out/$fw.qemu.err" | head -5; sed 's/^/    /' "$log" | head -20
+        echo "FAIL $fw (log: $log)"; sed 's/^/    qemu: /' "$out/$tag.qemu.err" | head -5; sed 's/^/    /' "$log" | head -20
         fail=1
     fi
 done

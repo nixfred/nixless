@@ -33,7 +33,7 @@ Fred's rule (2026-11-26), from a real hex observation: a bare-metal LLM OS that 
 
 M0 is the only thing being built (scope and exit in section 16). It needs no network, no model and no SMP.
 
-- Status 2026-11-26: the Zig kernel, Multiboot2 stub, hybrid ISO and `scripts/qemu-boot-check.sh` exist. The banner prints under SeaBIOS and OVMF in local QEMU on q35. Not yet done: the same check on hex, which needs the q35 VM and OVMF variant from Proxmox Expert (request sent 2026-11-26).
+- Status 2026-11-26: M0 plus the first slice of M1 exist: the Zig kernel, Multiboot2 stub, hybrid ISO, `scripts/qemu-boot-check.sh`, a GDT with TSS and IST stacks, an IDT on all 32 exception vectors, the panic dump with a frame-pointer backtrace, the Multiboot2 memory map, and `scripts/panic-check.sh` (page fault, divide error, invalid opcode, double fault, assertion; all pass). Still M1: page tables above 4 GiB with guard pages, frame allocator, ACPI, LAPIC, TSC, SMP, CPUID and AVX state, and the stack-overflow panic test. The banner prints under SeaBIOS and OVMF in local QEMU on q35. Not yet done: the same check on hex, which needs the q35 VM and OVMF variant from Proxmox Expert (request sent 2026-11-26).
 - Build: `zig build iso`, then `scripts/qemu-boot-check.sh [seabios|ovmf]`. Toolchain notes are in 13.1. Larry's user is not in the `kvm` group, so local runs use TCG until that changes; the script uses KVM when `/dev/kvm` is writable.
 
 ## 1. Product requirements
@@ -257,7 +257,7 @@ Panic procedure, on the core that faults:
 
 1. Mask interrupts and take the panic flag with one atomic compare-exchange. A core that loses the race HLT-loops with interrupts masked, so two simultaneous faults print once, not interleaved.
 2. Send an NMI to every other core so they stop computing. Wait a bounded time (a few milliseconds by TSC). A core that does not answer is named in the dump and ignored.
-3. Print on COM1, polled, with no allocation and no locks: `nixless PANIC: <reason>`, version and shorthash, core and APIC id, exception vector and error code, RIP, RSP, RFLAGS, CR0, CR2, CR3, CR4, all general registers, a frame-pointer backtrace as raw addresses (the host resolves them against the ELF with `addr2line`), the model name, the phase (boot, prefill or decode), the request count, and the last 64 lines of an in-RAM log ring.
+3. Print on COM1, polled, with no allocation and no locks: `nixless PANIC: <reason>`, version and shorthash, core and APIC id, exception vector and error code, RIP, RSP, RFLAGS, CR0, CR2, CR3, CR4, all general registers, a frame-pointer backtrace as raw addresses (the host resolves them against the ELF with `addr2line`), the model name, the phase (boot, prefill or decode) and the request count. The earlier log lines are already on serial, so there is no log ring.
 4. Halt state: `cli; hlt` in a loop. An NMI wakes the HLT and the handler returns to the loop. The VM stays "running" in Proxmox at near-zero host CPU, which keeps section 0b true even when broken.
 
 Also decided here:

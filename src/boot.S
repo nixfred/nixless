@@ -18,6 +18,14 @@ mb2_header:
     .long MB2_ARCH_I386
     .long mb2_header_end - mb2_header
     .long -(MB2_MAGIC + MB2_ARCH_I386 + (mb2_header_end - mb2_header))
+    # information request: memory map (6), ACPI RSDP old (14) and new (15)
+    .short 1
+    .short 0
+    .long 20
+    .long 6
+    .long 14
+    .long 15
+    .align 8
     # end tag
     .short 0
     .short 0

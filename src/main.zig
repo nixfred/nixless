@@ -1,70 +1,47 @@
-//! Nixless kernel, M0: serial banner, then halt. No heap, no interrupts yet.
+//! Nixless kernel entry. M1 in progress: GDT/TSS, IDT, panic procedure,
+//! Multiboot2 memory map. No heap, no interrupts other than exceptions yet.
 const std = @import("std");
 const build_options = @import("build_options");
+const cpu = @import("cpu.zig");
+const serial = @import("serial.zig");
+const gdt = @import("gdt.zig");
+const idt = @import("idt.zig");
+const mb2 = @import("mb2.zig");
+const panic_mod = @import("panic.zig");
 
-const COM1: u16 = 0x3F8;
-
-inline fn outb(port: u16, value: u8) void {
-    asm volatile ("outb %[v], %[p]"
-        :
-        : [v] "{al}" (value),
-          [p] "{dx}" (port),
-    );
-}
-
-inline fn inb(port: u16) u8 {
-    return asm volatile ("inb %[p], %[r]"
-        : [r] "={al}" (-> u8),
-        : [p] "{dx}" (port),
-    );
-}
-
-/// 16550 UART, 115200 8N1, polled (PRD section 7).
-fn serialInit() void {
-    outb(COM1 + 1, 0x00); // no interrupts
-    outb(COM1 + 3, 0x80); // DLAB on
-    outb(COM1 + 0, 0x01); // divisor 1 = 115200
-    outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x03); // 8N1, DLAB off
-    outb(COM1 + 2, 0xC7); // FIFO on, cleared, 14-byte threshold
-    outb(COM1 + 4, 0x0B); // DTR, RTS, OUT2
-}
-
-fn serialPutc(c: u8) void {
-    // Bounded wait for the transmit-holding register (PRD section 0b: no
-    // unbounded spin). A dropped byte beats a hung CPU.
-    var tries: u32 = 0;
-    while (tries < 100_000) : (tries += 1) {
-        if (inb(COM1 + 5) & 0x20 != 0) break;
-        std.atomic.spinLoopHint();
-    }
-    outb(COM1, c);
-}
-
-fn serialWrite(s: []const u8) void {
-    for (s) |c| {
-        if (c == '\n') serialPutc('\r');
-        serialPutc(c);
-    }
-}
-
-/// Idle forever with interrupts off: HLT costs the host nothing (PRD 0b).
-fn haltForever() noreturn {
-    while (true) asm volatile ("cli; hlt");
-}
-
-fn panicImpl(msg: []const u8, _: ?usize) noreturn {
-    serialWrite("nixless PANIC: ");
-    serialWrite(msg);
-    serialWrite("\n");
-    haltForever();
+fn panicImpl(msg: []const u8, first_addr: ?usize) noreturn {
+    panic_mod.softwarePanic(msg, first_addr);
 }
 
 pub const panic = std.debug.FullPanic(panicImpl);
 
+/// Deliberate faults for the panic tests (`zig build -Dpanic-test=<kind>`).
+fn panicTest(kind: []const u8) void {
+    if (kind.len == 0) return;
+    serial.write("panic-test: ");
+    serial.write(kind);
+    serial.write("\n");
+    if (std.mem.eql(u8, kind, "pf")) {
+        @as(*volatile u8, @ptrFromInt(0x1_0000_0000)).* = 1; // above the 4 GiB boot map
+    } else if (std.mem.eql(u8, kind, "de")) {
+        asm volatile ("xorl %%edx, %%edx; movl $1, %%eax; xorl %%ecx, %%ecx; divl %%ecx" ::: .{ .rax = true, .rcx = true, .rdx = true });
+    } else if (std.mem.eql(u8, kind, "ud")) {
+        asm volatile ("ud2");
+    } else if (std.mem.eql(u8, kind, "df")) {
+        // A bad stack pointer makes exception delivery itself fault: #DF on its IST stack.
+        asm volatile ("movabsq $0x100000000000, %%rsp; int3" ::: .{ .memory = true });
+    } else if (std.mem.eql(u8, kind, "assert")) {
+        @panic("assertion test");
+    }
+}
+
 export fn kmain(mb2_info: u32) callconv(.c) noreturn {
-    _ = mb2_info;
-    serialInit();
-    serialWrite("nixless " ++ build_options.version ++ " " ++ build_options.git_hash ++ " booting\n");
-    haltForever();
+    serial.init();
+    serial.write("nixless " ++ build_options.version ++ " " ++ build_options.git_hash ++ " booting\n");
+    gdt.init();
+    idt.init();
+    const info = mb2.parse(mb2_info);
+    mb2.printMemory(info);
+    panicTest(build_options.panic_test);
+    cpu.haltForever();
 }
