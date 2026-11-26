@@ -1,6 +1,6 @@
 # Nixless: PRD and design
 
-Status: draft v0.2, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
+Status: draft v0.3, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
 
 Nixless is Fred Nix's own operating system, written from scratch, from the firmware up. It powers on, runs its own firmware, hands off to its own kernel, loads a language model and serves it over a network API. There is no shell, no userland and no disk requirement. It is an AI appliance that runs as a small, disposable VM on hex.
 
@@ -11,7 +11,7 @@ An existing third-party bare-metal LLM OS ("the yardstick OS") is used as an ext
 Fred's rule (2026-11-26): Nixless must always be bootable on hex/Proxmox.
 
 - Every milestone and every commit on `main` must produce an ISO that boots in a Proxmox VM on hex and reaches its boot log on serial.
-- The target VM shape: `cpu=host`, diskless, virtio-net attached, serial0 socket. The ISO must boot under both SeaBIOS and OVMF (UEFI) through GRUB.
+- The target VM shape: `machine: q35`, `cpu=host`, diskless, virtio-net attached, serial0 socket. The ISO must boot under both SeaBIOS and OVMF (UEFI) through GRUB.
 - From the firmware milestone (M5) on, the Nixless firmware image must also boot the same kernel on hex via `args: -bios <file>`. The GRUB ISO path keeps working for the life of the project, so the invariant never depends on the newest layer.
 - The Proxmox boot check (section 14.1) is the gate for every milestone. A milestone is not done until it passes.
 - A change that breaks the boot check is fixed or reverted before anything else lands on `main`.
@@ -116,7 +116,9 @@ flowchart TB
   API --> ENG
 ```
 
-Key design choice: both boot paths hand the kernel the same thing, a Multiboot2-format boot information structure. The Nixless firmware builds that structure itself. So the kernel has exactly one entry contract, and the GRUB ISO stays a working fallback forever at zero extra kernel cost.
+Key design choice: both boot paths hand the kernel the same thing, a Multiboot2-format boot information structure. The Nixless firmware builds that structure itself. The kernel has one info contract and two entry points: the Multiboot2 entry in 32-bit protected mode (GRUB, path A) and a documented 64-bit entry (Nixless firmware, path B). Both end in the same `kmain`, so the GRUB ISO stays a working fallback forever at almost no extra kernel cost.
+
+Decided (Fred, 2026-11-26): the firmware calls the 64-bit entry directly. It does not drop back to 32-bit to fake a GRUB handoff.
 
 Execution model: the bootstrap processor (BSP) runs the network loop and request queue. Application processors (APs) halt until the BSP sends an IPI with work, take slices of matrix work, then halt again. No preemptive scheduler. Interrupt-driven I/O (virtio-net, one-shot timer); short bounded polling only while a request is in flight (section 0b).
 
@@ -166,7 +168,12 @@ Our own BIOS replacement in Zig and asm. It replaces SeaBIOS, OVMF and GRUB on Q
    - `etc/table-loader`, `etc/acpi/tables`, `etc/acpi/rsdp` to install QEMU's generated ACPI tables (linker/loader commands: allocate, add pointer, add checksum),
    - the kernel ELF and the GGUF model as fw_cfg files (for example `opt/nixless/kernel` and `opt/nixless/model`, passed with `-fw_cfg name=opt/nixless/model,file=<path>`), or via the standard `-kernel` items.
 9. Load: parse the kernel ELF64 and place its segments. DMA the GGUF straight to a large RAM region, above 4 GiB when the VM has it, so model size is limited by VM RAM, not a loader.
-10. Handoff: build a Multiboot2-format info structure (memory map from e820, ACPI new RSDP tag, a module tag pointing at the model, a command line tag with Nixless boot flags), then enter the kernel. Because the kernel's Multiboot2 entry expects 32-bit protected mode, the firmware either drops back to that state or, preferably, calls a documented 64-bit entry point in the kernel with the same info pointer. Decided in M5; both use the same info format.
+10. Handoff: build a Multiboot2-format info structure (memory map from e820, ACPI new RSDP tag, a module tag pointing at the model, a command line tag with Nixless boot flags), then jump to the kernel's 64-bit entry point with the info pointer in RDI. Decided 2026-11-26: no drop back to 32-bit protected mode. Proposed entry contract, to be finalized in M5:
+    - CPU in 64-bit long mode, interrupts disabled, direction flag clear.
+    - Paging on, with the first 4 GiB identity mapped plus the RAM that holds the kernel and model. The kernel builds its own page tables and GDT right away and does not rely on the firmware's.
+    - A valid stack in RAM, 16-byte aligned, at least 16 KiB.
+    - RDI = physical address of the Multiboot2-format info structure. No other register is meaningful.
+    - The entry address comes from a Nixless ELF note in the kernel image, so the firmware never hard-codes it.
 11. APs stay in their reset wait state. The kernel starts them with INIT-SIPI-SIPI, as on path A.
 
 ### 4.3 Running it on Proxmox
@@ -215,7 +222,7 @@ Planning targets, not measured.
   - Kernel banner (asserted by the boot check): `nixless <version> <shorthash> booting`.
   - Firmware banner (path B): `nixless-fw <version> <shorthash>`.
   - Ready line: `nixless ready model=<name> arch=<arch> quant=<type> ip=<addr> port=<port>`.
-- PCI: legacy config ports 0xCF8/0xCFC (i440fx) and ECAM via ACPI MCFG (q35). Find virtio devices by vendor 0x1AF4 and their virtio 1.x capability structures. On path B the firmware has already assigned BARs; on path A SeaBIOS or OVMF has.
+- PCI: q35 only (decided 2026-11-26). ECAM via ACPI MCFG is the main path; legacy config ports 0xCF8/0xCFC are used only before MCFG is parsed. Find virtio devices by vendor 0x1AF4 and their virtio 1.x capability structures. On path B the firmware has already assigned BARs; on path A SeaBIOS or OVMF has.
 - virtio-net (OASIS VIRTIO 1.2, section 5.1): modern devices only. Negotiate VERSION_1, MAC, STATUS. No offloads in v1. One RX/TX queue pair, split virtqueues, MSI-X with polling fallback. Proxmox: `--net0 virtio,bridge=vmbr0`.
 - virtio-blk (later, M7): read-only, GGUF at a fixed offset. No filesystem.
 
@@ -362,8 +369,8 @@ qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 16 -m 4096 \
 ### 13.3 Proxmox on hex
 
 - VM 901 (`nixless-os`) today: 16 vCPU, `cpu=host`, 2048 MiB, balloon 0, no disk, i440fx, SeaBIOS, serial0 socket, boots ide2.
-- Needed for the invariant (request from Proxmox Expert before M0 closes): a virtio-net NIC on 901, and an OVMF variant (a second VM in pool `nixless` with `bios=ovmf`, or switching firmwares).
-- Needed for M5: a q35 VM in pool `nixless` with `args: -bios ...` and fw_cfg files on the hex host.
+- Decided 2026-11-26: Nixless moves to q35 now, not at M5. Request from Proxmox Expert before M0 closes: switch 901 to `machine: q35` (still `bios: seabios`, so no pflash is added), add a virtio-net NIC, and add an OVMF variant (a second q35 VM in pool `nixless` with `bios=ovmf`, or switching firmwares).
+- Needed for M5: the same q35 VM with `args: -bios ...` and fw_cfg files on the hex host.
 - ISO path on hex: `/mnt/hexfiles/template/iso/`, attached with `qm set 901 --ide2 hexfiles:iso/<name>.iso,media=cdrom`. Not `/var/lib/vz/template/iso`.
 - Serial capture: `socat UNIX-CONNECT:/var/run/qemu-server/901.serial0 STDIO,escape=0x1d` or `qm terminal 901`.
 - Starts, stops and host file placement go through Proxmox Expert. Never run 901 and 902 at the same time.
@@ -449,8 +456,8 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 
 1. Big models on the GRUB path: virtio-blk or HTTP fetch? (The firmware path already removes the limit via fw_cfg.)
 2. OVMF on hex: a second VM in pool `nixless`, or one VM switched between firmwares? (Proxmox Expert.)
-3. Main VM chipset: i440fx (901 today) or q35 (needed for the firmware path)? Moving everything to q35 early is simpler.
-4. Firmware to kernel entry: drop to 32-bit and use the Multiboot2 entry, or add a 64-bit entry with the same info pointer?
+3. DECIDED 2026-11-26 (Fred): q35 everywhere, from now on. See 13.3.
+4. DECIDED 2026-11-26 (Fred): the firmware calls a 64-bit kernel entry with the same info pointer. See 2 and 4.2.
 5. Does QEMU's fw_cfg DMA load a multi-GiB model fast enough, or should big models still come via virtio-blk?
 6. Assembly syntax: GNU as through the Zig toolchain, or NASM as an external step?
 7. KV cache default precision: F16 or F32?
@@ -469,6 +476,6 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 
 ## 19. License
 
-- Fred decides the license. Until he does, the code is all rights reserved and the repo stays private.
+- The repo is public (Fred, 2026-11-26). Fred decides the license; until a LICENSE file is added, the code is all rights reserved by default.
 - Nixless is written from scratch in Zig and assembly.
 - Model weights keep their own licenses and are never committed to the repo.
