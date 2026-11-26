@@ -40,6 +40,18 @@ pub inline fn cr0() u64 {
         : [r] "=r" (-> u64),
     );
 }
+pub inline fn setCr0(v: u64) void {
+    asm volatile ("mov %[v], %%cr0"
+        :
+        : [v] "r" (v),
+        : .{ .memory = true });
+}
+pub inline fn setCr3(v: u64) void {
+    asm volatile ("mov %[v], %%cr3"
+        :
+        : [v] "r" (v),
+        : .{ .memory = true });
+}
 pub inline fn cr2() u64 {
     return asm volatile ("mov %%cr2, %[r]"
         : [r] "=r" (-> u64),

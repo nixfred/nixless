@@ -10,17 +10,22 @@ PHDRS {
 
 SECTIONS {
     . = 1M;
+    __kernel_start = .;
 
     .text : ALIGN(4096) {
         KEEP(*(.multiboot2))
         *(.boot.text)
         *(.text .text.*)
     } :text
+    . = ALIGN(4096);
+    __text_end = .;
 
     .rodata : ALIGN(4096) {
         *(.boot.rodata)
         *(.rodata .rodata.*)
     } :rodata
+    . = ALIGN(4096);
+    __rodata_end = .;
 
     .data : ALIGN(4096) {
         *(.data .data.*)
@@ -30,6 +35,9 @@ SECTIONS {
         *(.bss .bss.*)
         *(COMMON)
     } :data
+    . = ALIGN(4096);
+    __kernel_end = .;
+    ASSERT(__kernel_end <= 0x200000, "kernel image outgrew the first 2 MiB (vmm maps it with 4 KiB pages)")
 
     /DISCARD/ : {
         *(.eh_frame*)

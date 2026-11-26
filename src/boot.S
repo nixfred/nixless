@@ -148,6 +148,8 @@ pml4:       .skip 4096
 pdpt:       .skip 4096
 pd:         .skip 4096 * 4
 mb2_info:   .skip 8
-.align 16
+.align 4096
+.global boot_stack_guard
+boot_stack_guard: .skip 4096    # left unmapped by vmm.init
 boot_stack: .skip 16384
 boot_stack_top:

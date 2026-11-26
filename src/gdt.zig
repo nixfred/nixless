@@ -48,12 +48,23 @@ const Gdtr = packed struct { limit: u16, base: u64 };
 
 var tss: Tss align(16) = .{};
 var gdt: Gdt align(16) = .{};
-var ist_stacks: [3][IST_STACK_SIZE]u8 align(16) = undefined;
+// Each slot is a 4 KiB guard page (left unmapped by vmm) then the stack.
+const IST_SLOT = 4096 + IST_STACK_SIZE;
+var ist_area: [3 * IST_SLOT]u8 align(4096) = undefined;
+
+/// Tell the page tables which pages to leave unmapped. Call before vmm.init.
+pub fn registerGuards(register: *const fn (u64) void) void {
+    for (0..3) |i| register(@intFromPtr(&ist_area) + i * IST_SLOT);
+}
+
+fn istTop(i: usize) u64 {
+    return @intFromPtr(&ist_area) + (i + 1) * IST_SLOT;
+}
 
 pub fn init() void {
-    tss.ist1 = @intFromPtr(&ist_stacks[0]) + IST_STACK_SIZE; // double fault
-    tss.ist2 = @intFromPtr(&ist_stacks[1]) + IST_STACK_SIZE; // NMI
-    tss.ist3 = @intFromPtr(&ist_stacks[2]) + IST_STACK_SIZE; // machine check
+    tss.ist1 = istTop(0); // double fault
+    tss.ist2 = istTop(1); // NMI
+    tss.ist3 = istTop(2); // machine check
     const base = @intFromPtr(&tss);
     const limit: u64 = 104 - 1;
     gdt.tss_lo = (limit & 0xFFFF) |

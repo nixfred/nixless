@@ -5,6 +5,7 @@ const build_options = @import("build_options");
 const cpu = @import("cpu.zig");
 const serial = @import("serial.zig");
 const idt = @import("idt.zig");
+const vmm = @import("vmm.zig");
 
 var panicking = std.atomic.Value(bool).init(false);
 
@@ -60,7 +61,8 @@ fn backtrace(start_rbp: u64) void {
 }
 
 pub fn exceptionPanic(frame: *idt.Frame) noreturn {
-    begin(if (frame.vector < 32) exception_names[@intCast(frame.vector)] else "unknown exception");
+    const overflow = (frame.vector == 14 or frame.vector == 8) and vmm.isGuardAddr(cpu.cr2());
+    begin(if (overflow) "STACK OVERFLOW (guard page hit)" else if (frame.vector < 32) exception_names[@intCast(frame.vector)] else "unknown exception");
     serial.write("  vector ");
     serial.dec(frame.vector);
     serial.write(" error ");

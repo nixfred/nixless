@@ -15,6 +15,9 @@ banner=${EXPECT:-'nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'}
 # EXPECT overrides the pattern; ALLOW_PANIC=1 lets PANIC/FATAL through (panic tests);
 # ALIVE_AFTER=1 also requires QEMU still running a second later (halted, not reset).
 
+# CHECKPOINTS: extra lines that must also appear (one per line), added per milestone.
+checkpoints=${CHECKPOINTS-$'mem: usable\npmm: \nvmm: direct map ok'}
+
 [ -r "$iso" ] || { echo "no ISO at $iso (run: zig build iso)"; exit 2; }
 mkdir -p "$out"
 [ $# -gt 0 ] || set -- seabios ovmf
@@ -24,7 +27,7 @@ for fw in "$@"; do
     tag=${LOG_TAG:-$fw}
     log="$out/$tag.log"
     : >"$log"
-    args=(-machine q35 -smp 1 -m 256 -cdrom "$iso" -boot d
+    args=(-machine q35 -smp 1 -m ${MEM:-256} -cdrom "$iso" -boot d
           -display none -no-reboot -serial "file:$log")
     # KVM when this user may use it, else TCG (slow, fine for M0).
     if [ -w /dev/kvm ]; then args+=(-enable-kvm -cpu host); else args+=(-cpu max); fi
@@ -43,7 +46,13 @@ for fw in "$@"; do
     qpid=$!
     seen=0
     for _ in $(seq 1 $((timeout_s * 5))); do
-        if grep -qE "$banner" "$log"; then seen=1; break; fi
+        if grep -qE "$banner" "$log"; then
+            seen=1
+            while IFS= read -r cp; do
+                [ -z "$cp" ] || grep -qF "$cp" "$log" || seen=0
+            done <<<"$checkpoints"
+            [ $seen = 1 ] && break
+        fi
         kill -0 "$qpid" 2>/dev/null || break
         sleep 0.2
     done
@@ -57,7 +66,7 @@ for fw in "$@"; do
     [ "${vars:-}" ] && rm -f "$vars" && vars=
 
     if [ $seen = 1 ] && [ $alive = 1 ] && { [ "${ALLOW_PANIC:-0}" = 1 ] || ! grep -qE 'PANIC|FATAL' "$log"; }; then
-        echo "PASS $fw: $(grep -E "$banner" "$log" | tr -d '\r')"
+        echo "PASS $fw: $(grep -E "$banner" "$log" | head -1 | tr -d '\r') ${checkpoints:+(+ checkpoints)}"
     else
         echo "FAIL $fw (log: $log)"; sed 's/^/    qemu: /' "$out/$tag.qemu.err" | head -5; sed 's/^/    /' "$log" | head -20
         fail=1

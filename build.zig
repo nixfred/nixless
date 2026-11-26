@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", zon.version);
     opts.addOption([]const u8, "git_hash", git_hash);
-    const panic_test = b.option([]const u8, "panic-test", "Deliberate fault after boot: pf, de, ud, df or assert") orelse "";
+    const panic_test = b.option([]const u8, "panic-test", "Deliberate fault after boot: pf, null, ro, so, de, ud, df or assert") orelse "";
     opts.addOption([]const u8, "panic_test", panic_test);
 
     const kmod = b.createModule(.{
