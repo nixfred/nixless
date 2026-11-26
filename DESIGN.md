@@ -220,7 +220,7 @@ Planning targets, not measured.
 
 ## 6b. Panic and failure behavior
 
-Proposed 2026-11-26, to be confirmed by Fred (open question 11). Principle: when Nixless fails it says so loudly on serial, then goes quiet and cheap. It never spins, never reboots by itself and never leaves the operator guessing.
+Decided 2026-11-26 (Fred): halt, dump, stay idle; no auto-reboot by default. Principle: when Nixless fails it says so loudly on serial, then goes quiet and cheap. It never spins, never reboots by itself and never leaves the operator guessing.
 
 | Class | Examples | Behavior |
 | --- | --- | --- |
@@ -294,7 +294,7 @@ Tokenizer, from GGUF metadata:
 
 Proposed 2026-11-26. One rule drives it: one VM, one model, one boot. Switching models means changing the VM config and starting it again (the VM is disposable). Nixless never writes to a model.
 
-Where models live: on hex's `hexfiles` volume (`/mnt/hexfiles`, 76 GiB free when checked read-only on 2026-11-26; `/mnt/hexfiles/nixless/` does not exist yet). Proposed library, with placement by Proxmox Expert: `/mnt/hexfiles/nixless/models/<name>.gguf`, named like `qwen3-0.6b-q8_0.gguf`, each next to a `<name>.gguf.sha256`. Model files never go in this repo (it is public); `models/` is git-ignored.
+Where models live: on hex's `hexfiles` volume (`/mnt/hexfiles`, 76 GiB free when checked read-only on 2026-11-26; `/mnt/hexfiles/nixless/` does not exist yet). Library (Larry creates and maintains it with his own hex access, decided 2026-11-26): `/mnt/hexfiles/nixless/models/<name>.gguf`, named like `qwen3-0.6b-q8_0.gguf`, each next to a `<name>.gguf.sha256`. Model files never go in this repo (it is public); `models/` is git-ignored.
 
 | Mode | Path | Size limit | How it is attached | When |
 | --- | --- | --- | --- | --- |
@@ -522,9 +522,9 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 8. Where boot logs and benchmark artifacts live: repo or a nas artifacts folder?
 9. Bearer token on the API in v1?
 10. Search for existing work on each idea in section 18 before calling it new.
-11. Panic default (6b): halt with the dump and no auto-reboot, `panic=reboot` opt-in. Confirm.
+11. DECIDED 2026-11-26 (Fred): panic halts with the dump and no auto-reboot; `panic=reboot` is opt-in. See 6b.
 12. Does hex's Ollama store already hold GGUF blobs worth reusing as the model library? (Ollama blobs are GGUF files. Where they live on hex was not checked.)
-13. Who owns the model library on hex and its sidecar sha256 files (Proxmox Expert, or Larry with his own hex access)?
+13. DECIDED 2026-11-26 (Fred): Larry owns the model library on hex and its sidecar sha256 files, using his own hex access. Proxmox Expert still owns VM config, starts and stops.
 
 ## 18. Future ideas the architecture keeps open (not in v1)
 
