@@ -3,3 +3,4 @@ models/
 zig-out/
 .zig-cache/
 bootlogs/
+!tests/fixtures/*.gguf

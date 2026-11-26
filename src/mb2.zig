@@ -6,6 +6,7 @@ const Tag = extern struct { kind: u32, size: u32 };
 
 const TAG_END = 0;
 const TAG_CMDLINE = 1;
+const TAG_MODULE = 3;
 const TAG_MMAP = 6;
 const TAG_ACPI_OLD = 14;
 const TAG_ACPI_NEW = 15;
@@ -14,11 +15,18 @@ pub const MemType = enum(u32) { available = 1, reserved = 2, acpi_reclaimable = 
 
 pub const MemRegion = extern struct { base: u64, length: u64, kind: u32, reserved: u32 };
 
+pub const MAX_MODULES = 4;
+
+/// A boot module (`module2` in grub.cfg): the model file on the GRUB path.
+pub const Module = struct { start: u64, end: u64, cmdline: []const u8 };
+
 pub const Info = struct {
     base: usize,
     mmap: []align(1) const MemRegion = &.{},
     rsdp: ?usize = null, // physical address of the RSDP copy inside the info
     cmdline: []const u8 = &.{},
+    modules: [MAX_MODULES]Module = undefined,
+    module_count: usize = 0,
 };
 
 fn tagData(t: *const Tag) usize {
@@ -43,6 +51,14 @@ pub fn parse(addr: usize) Info {
                 }
             },
             TAG_ACPI_OLD, TAG_ACPI_NEW => info.rsdp = tagData(t),
+            TAG_MODULE => if (info.module_count < MAX_MODULES) {
+                const hdr: [*]align(1) const u32 = @ptrFromInt(tagData(t));
+                const s: [*]const u8 = @ptrFromInt(tagData(t) + 8);
+                var n: usize = 0;
+                while (n < t.size - @sizeOf(Tag) - 8 and s[n] != 0) n += 1;
+                info.modules[info.module_count] = .{ .start = hdr[0], .end = hdr[1], .cmdline = s[0..n] };
+                info.module_count += 1;
+            },
             TAG_CMDLINE => {
                 const s: [*]const u8 = @ptrFromInt(tagData(t));
                 var n: usize = 0;

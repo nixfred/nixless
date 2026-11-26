@@ -61,13 +61,32 @@ pub fn build(b: *std.Build) void {
     // Hybrid ISO (SeaBIOS and OVMF): GRUB 2 + Multiboot2.
     const iso_tree = b.addWriteFiles();
     _ = iso_tree.addCopyFile(kernel.getEmittedBin(), "boot/nixless.elf");
-    _ = iso_tree.addCopyFile(b.path("grub.cfg"), "boot/grub/grub.cfg");
+    // The model rides along as a Multiboot2 module. Default: the small test fixture
+    // (so the boot check can run the matmul test); -Dmodel=none builds an ISO with no
+    // module (the E_NO_MODEL test); -Dmodel=<path> bakes a real model in.
+    const model_opt = b.option([]const u8, "model", "GGUF to put on the ISO as a module, or 'none'") orelse "tests/fixtures/tiny.gguf";
+    const have_model = !std.mem.eql(u8, model_opt, "none");
+    if (have_model) _ = iso_tree.addCopyFile(b.path(model_opt), "boot/model.gguf");
+    const grub_tmpl = @embedFile("grub.cfg");
+    const grub_cfg = std.mem.replaceOwned(u8, b.allocator, grub_tmpl, "@MODULE@", if (have_model) "module2 /boot/model.gguf model" else "") catch @panic("OOM");
+    _ = iso_tree.add("boot/grub/grub.cfg", grub_cfg);
     const mkrescue = b.addSystemCommand(&.{"grub-mkrescue"});
     mkrescue.addArg("-o");
     const iso = mkrescue.addOutputFileArg("nixless.iso");
     mkrescue.addDirectoryArg(iso_tree.getDirectory());
     const iso_step = b.step("iso", "Build zig-out/nixless.iso (needs grub-mkrescue, xorriso, mtools)");
     iso_step.dependOn(&b.addInstallFile(iso, "nixless.iso").step);
+
+    // Host-side parser tests: zig build test
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/gguf_test.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    test_mod.addAnonymousImport("tiny.gguf", .{ .root_source_file = b.path("tests/fixtures/tiny.gguf") });
+    const tests = b.addTest(.{ .root_module = test_mod });
+    const test_step = b.step("test", "Run the host-side GGUF parser tests");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 fn gitHash(b: *std.Build) []const u8 {

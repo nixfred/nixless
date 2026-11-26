@@ -48,6 +48,9 @@ pub fn init(info: mb2.Info) void {
     // Put the bitmap in the first usable region above the kernel and the boot info.
     var floor = kend;
     if (info.base + info_total > floor) floor = info.base + info_total;
+    for (info.modules[0..info.module_count]) |m| {
+        if (m.end > floor) floor = m.end;
+    }
     floor = (floor + FRAME - 1) & ~(FRAME - 1);
     var placed = false;
     for (info.mmap) |r| {
@@ -79,6 +82,7 @@ pub fn init(info: mb2.Info) void {
     reserve(0, 0x100000); // low 1 MiB
     reserve(kstart, kend - kstart);
     reserve(info.base, info_total);
+    for (info.modules[0..info.module_count]) |m| reserve(m.start, m.end - m.start);
     reserve(bm_base, bitmap_bytes);
 
     serial.write("pmm: ");

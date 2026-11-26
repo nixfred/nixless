@@ -15,6 +15,7 @@ const clock = @import("clock.zig");
 const lapic = @import("lapic.zig");
 const smp = @import("smp.zig");
 const cpuinfo = @import("cpuinfo.zig");
+const model = @import("model.zig");
 
 fn timerFired() bool {
     return lapic.timer_fired != 0;
@@ -77,6 +78,8 @@ export fn kmain(mb2_info: u32) callconv(.c) noreturn {
     gdt.registerGuards(&vmm.registerGuard);
     vmm.init(info);
     vmm.selfTest();
+    const gg = model.load(&info);
+    model.selfTest(gg);
 
     const a = (if (info.rsdp) |r| acpi.parse(r) else null) orelse @panic("E_NO_ACPI: no usable RSDP");
     acpi.print(&a);

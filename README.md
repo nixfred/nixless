@@ -13,7 +13,7 @@
 Nixless is Fred's operating-system exploration: **model-as-appliance VMs** on hex (his Proxmox box).
 A VM whose whole job is to be the model, with nothing else on it.
 
-M0 and the software half of M1 work in QEMU under SeaBIOS and OVMF: the kernel brings up memory, page tables, interrupts, a timer and all CPUs, parks idle cores in HLT, and prints a full panic dump on a fault. The hex run is next. No inference code exists yet.
+M0 and M1 are done, and M1 passed on hex (16 cores, AVX-512, idle cost 0.03% of one host core). M2 is under way: the kernel reads a GGUF model handed over as a boot module, validates it, and runs a Q8_0 matrix-vector product that matches NumPy exactly. No inference yet.
 
 Build and check: `zig build iso`, then `scripts/qemu-boot-check.sh` (Zig 0.16.0 via mise; see [DESIGN.md](DESIGN.md) section 13.1).
 
