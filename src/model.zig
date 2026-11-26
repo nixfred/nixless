@@ -108,4 +108,16 @@ pub fn selfTest(m: *const gguf.Model) void {
     serial.write(" ppm (limit 10)\n");
     if (sum != want_sum or worst > 10) fatal("E_SELFTEST", "q8_0 matmul does not match NumPy");
     serial.write("matmul: ok vs NumPy\n");
+
+    // The AVX2 kernel must give the very same bits as the reference.
+    if (quant.haveAvx2()) {
+        var ya: [256]f32 = undefined;
+        const sum2 = quant.matvecQ8Avx2(m.bytes(w), rows, cols, act[0..nb], &ya);
+        var same = sum2 == sum;
+        for (0..rows) |r| {
+            if (@as(u32, @bitCast(ya[r])) != @as(u32, @bitCast(yf[r]))) same = false;
+        }
+        serial.write(if (same) "matmul: avx2 kernel bit-identical to the reference\n" else "matmul: avx2 kernel DIFFERS from the reference\n");
+        if (!same) fatal("E_SELFTEST", "q8_0 avx2 kernel differs from the reference");
+    } else serial.write("matmul: avx2 not available, reference only\n");
 }

@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     // The SIMD self-tests need an assembler that accepts AVX2 and AVX-512, so they
     // are their own object built for a richer CPU; the kernel proper stays SSE-free.
     var simd_on = std.Target.Cpu.Feature.Set.empty;
-    for ([_]F{ .avx, .avx2, .avx512f, .avx512bw, .avx512vl }) |f| simd_on.addFeature(@intFromEnum(f));
+    for ([_]F{ .avx, .avx2, .f16c, .avx512f, .avx512bw, .avx512vl }) |f| simd_on.addFeature(@intFromEnum(f));
     const simd_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .freestanding,

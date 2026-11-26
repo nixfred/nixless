@@ -6,12 +6,13 @@
 //! to Q8_0 as well, each block pair gives an exact int32 sum, and the float
 //! part is `acc += isum * (d_w * d_x)` in f32, block order, no fused multiply-add.
 const std = @import("std");
+const cpuinfo = @import("cpuinfo.zig");
 
 pub const BLOCK = 32;
 pub const BLOCK_BYTES = 34;
 
 /// An activation block as the kernels use it (not a file format).
-pub const ActBlock = struct { d: f32, q: [BLOCK]i8 };
+pub const ActBlock = extern struct { d: f32, q: [BLOCK]i8 };
 
 pub fn f16ToF32(bits: u16) f32 {
     const h: f16 = @bitCast(bits);
@@ -75,5 +76,21 @@ pub fn matvecQ8(w: []const u8, rows: usize, cols: usize, x: []const ActBlock, y:
         }
         y[r] = acc;
     }
+    return checksum;
+}
+
+extern fn q8_row_dot_avx2(w: [*]const u8, x: [*]const ActBlock, nb: usize, isum: *i64) u32;
+
+/// The AVX2 kernel needs AVX2 and F16C state enabled on this CPU.
+pub fn haveAvx2() bool {
+    return cpuinfo.features.avx2 and cpuinfo.features.f16c and cpuinfo.xcr0 & 0x4 != 0;
+}
+
+/// Same contract and same bits as `matvecQ8`, using the AVX2 kernel.
+pub fn matvecQ8Avx2(w: []const u8, rows: usize, cols: usize, x: []const ActBlock, y: []f32) i64 {
+    const nb = cols / BLOCK;
+    std.debug.assert(w.len == rows * nb * BLOCK_BYTES and x.len == nb and y.len >= rows);
+    var checksum: i64 = 0;
+    for (0..rows) |r| y[r] = @bitCast(q8_row_dot_avx2(w[r * nb * BLOCK_BYTES ..].ptr, x.ptr, nb, &checksum));
     return checksum;
 }

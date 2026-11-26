@@ -16,7 +16,7 @@ banner=${EXPECT:-'nixless [0-9][0-9.]* [0-9a-zA-Z.-]* booting'}
 # ALIVE_AFTER=1 also requires QEMU still running a second later (halted, not reset).
 
 # CHECKPOINTS: extra lines that must also appear (one per line), added per milestone.
-default_cp=$(printf '%s\n' 'mem: usable' 'pmm: ' 'vmm: direct map ok' 'acpi: ' 'tsc: ' 'simd:' 'gguf: v3' 'matmul: ok vs NumPy' 'lapic: ' \
+default_cp=$(printf '%s\n' 'mem: usable' 'pmm: ' 'vmm: direct map ok' 'acpi: ' 'tsc: ' 'simd:' 'gguf: v3' 'matmul: ok vs NumPy' 'matmul: avx2 kernel bit-identical' 'lapic: ' \
     'timer: one-shot fired' "smp: ${SMP:-1} cores online" "smp: parallel sum ok on ${SMP:-1} cores")
 checkpoints=${CHECKPOINTS-$default_cp}
 
