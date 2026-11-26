@@ -1,6 +1,6 @@
 # Nixless: PRD and design
 
-Status: draft v0.4, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
+Status: draft v0.5, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
 
 Nixless is Fred Nix's own operating system, written from scratch, from the firmware up. It powers on, runs its own firmware, hands off to its own kernel, loads a language model and serves it over a network API. There is no shell, no userland and no disk requirement. It is an AI appliance that runs as a small, disposable VM on hex.
 
@@ -47,7 +47,7 @@ Fred, and NixNet. A Nixless VM is an inference appliance: boot it, point an HTTP
 | R6 | Uses all vCPUs and the best SIMD available (AVX2, AVX-512, VNNI), chosen at boot | Must |
 | R7 | Own firmware in Zig and asm, booting the kernel on QEMU q35 with no GRUB, SeaBIOS or OVMF | Must (M5) |
 | R8 | Deterministic output for a fixed seed and core count | Should |
-| R9 | Beats llama.cpp decode tok/s on hex at equal vCPUs | Goal, measured honestly |
+| R9 | Decode tok/s at parity with or better than llama.cpp on hex at equal vCPUs, reported with the share of memory bandwidth reached (1.4) | Goal, measured honestly |
 | R10 | Serial COM1 boot log and debug only | Must |
 | R11 | Good Proxmox neighbor: idle cores HLT, workers park, bounded PAUSE spins, near-zero host CPU when idle (section 0b) | Must |
 | R12 | Fails loud and quiet: every fatal error prints a stable code and CPU state on serial, then halts with the VM idle (section 6b) | Must |
@@ -64,6 +64,25 @@ Fred, and NixNet. A Nixless VM is an inference appliance: boot it, point an HTTP
 - No training, no fine-tuning, no multi-model hosting.
 - No real-hardware drivers beyond what QEMU/KVM exposes.
 - Nothing below our firmware (section 5).
+
+### 1.4 Success targets
+
+Proposed 2026-11-26. These are provisional until measured. A target that has no number yet says which milestone sets it. Measured results never get rounded in our favor.
+
+| Area | Target | Set or checked in |
+| --- | --- | --- |
+| Correctness | 64 greedy tokens identical to llama.cpp on Qwen3-0.6B Q8_0, both boot paths | M3, M5 |
+| Decode speed | Report decode tok/s and also the share of the VM's measured memory bandwidth it reaches. Parity with llama.cpp at equal vCPUs is a good result; beating it is a win. Decode is memory-bandwidth-bound, so a large lead is not expected. | M6 |
+| Idle cost | Under 2% of one host core, on every boot path (section 0b) | M1 onward |
+| Wake latency | Under 1 ms added from all cores parked to first token | M1, M4 |
+| Firmware handoff | Under 50 ms, excluding model DMA (4.4) | M5 |
+| Kernel to ready | Under 1 s from kernel entry to the ready line, excluding model load. `boot_ms` and `model_load_ms` are reported separately. | M3 |
+| Boot to ready | Total number set after the fw_cfg load is measured (open question 5) | M5 |
+| Snapshot clone | Time from "clone started" to a `/health` 200 on the clone is measured and reported, with no target until M6 | M6 |
+| Determinism | Same prompt, seed and core count gives byte-identical output over 10 runs, across reboots and boot paths | M3 onward |
+| Disposable | Start, ready, stop leaves no residue on hex: no leftover disk, no state outside the VM config | M4 |
+
+Use-case acceptance (what "useful" means): a client sends a chat completion to the VM's IP and gets a streamed answer from the model; the same request twice with the same seed gives the same bytes; and the VM can be created, used and destroyed in a script without a human on the console.
 
 ## 2. Architecture
 
@@ -253,6 +272,11 @@ Decisions inside this design:
   - Firmware banner (path B): `nixless-fw <version> <shorthash>`.
   - Ready line: `nixless ready model=<name> arch=<arch> quant=<type> ip=<addr> port=<port>`.
 - PCI: q35 only (decided 2026-11-26). ECAM via ACPI MCFG is the main path; legacy config ports 0xCF8/0xCFC are used only before MCFG is parsed. Find virtio devices by vendor 0x1AF4 and their virtio 1.x capability structures. On path B the firmware has already assigned BARs; on path A SeaBIOS or OVMF has.
+- Time (proposed 2026-11-26): there is no wall clock to trust, so Nixless keeps its own.
+  - TSC is the clock. At boot the kernel requires an invariant TSC (CPUID 0x80000007 EDX bit 8) and calibrates its frequency once against the ACPI PM timer (port from the FADT, 3.579545 MHz) over a bounded window of a few tens of milliseconds. That is the only boot-time busy wait, it is bounded, and it happens before the idle rules start to matter. If the hypervisor timing leaf 0x40000010 reports a TSC frequency it is used as a cross-check. Whether Proxmox exposes it is untested and gets checked in M1.
+  - `uptime_ms` is `(tsc_now - tsc_at_entry) / tsc_khz`. Timeouts and the TCP timer use the same source.
+  - The LAPIC timer is calibrated against the TSC. It runs in TSC-deadline mode when CPUID.01H:ECX bit 24 is set, else one-shot (section 0b).
+  - Wall time is best effort: the CMOS RTC is read once at boot and taken as UTC, and `created` fields in API responses are `rtc_at_boot + uptime`. There is no NTP in v1. A VM restored from a snapshot keeps the old wall time until it is rebooted. That is stated, not hidden.
 - virtio-net (OASIS VIRTIO 1.2, section 5.1): modern devices only. Negotiate VERSION_1, MAC, STATUS. No offloads in v1. One RX/TX queue pair, split virtqueues, MSI-X with polling fallback. Proxmox: `--net0 virtio,bridge=vmbr0`.
 - virtio-blk (later, M7): read-only, GGUF at a fixed offset. No filesystem.
 
@@ -273,6 +297,17 @@ Minimal, following the RFCs. One IPv4 address, one listening port.
 | JSON | Small parser and writer for API bodies | RFC 8259 |
 
 No IPv6, TLS or DNS in v1.
+
+M4 is built in two steps so the first working `curl` comes early (proposed 2026-11-26):
+
+| Step | TCP and HTTP scope | Done when |
+| --- | --- | --- |
+| M4a | One active connection at a time. Fixed 1 s retransmit timeout with a small retry limit. Out-of-order segments are dropped and the peer retransmits. Fixed receive window equal to the RX buffer. MSS 1460, Nagle off. HTTP requests with `Content-Length` bodies only, a chunked request body gets 411, a request over 64 KiB gets 413. `Connection: close` is always honored. SSE streams chunked. | `curl` completions and streamed chat work against the VM on hex |
+| M4b | Up to 16 connections. RTT-estimated retransmit timeout (RFC 6298), keep-alive, an idle timeout, zero-window probing, FIN and RST edge cases. | The 14.5 test set passes: 16 concurrent connections, mid-stream disconnects, malformed HTTP, loss and reorder injection |
+
+Escape hatch, documented but not v1: if the TCP stack stalls the schedule, the model API can move to a virtio-vsock or virtio-console channel with a small proxy on hex. That keeps M5 and M6 unblocked. It would be a change of scope that Fred decides, not a quiet fallback.
+
+Test approach: parsers and the state machine run host-side against recorded packets; the whole stack runs in local QEMU on a TAP device; loss, delay and reorder come from `tc netem` on that TAP.
 
 ## 9. GGUF loader
 
@@ -466,7 +501,7 @@ VM starts and stops go through Proxmox Expert unless Larry runs them with his ow
 
 ### 14.5 Network tests
 
-- Ping, DHCP lease, 1000 sequential `/health` calls, 16 concurrent connections, mid-stream disconnects, malformed HTTP. Never panic on bad input.
+- Ping, DHCP lease, 1000 sequential `/health` calls, 16 concurrent connections, mid-stream disconnects, malformed HTTP, packet loss, delay and reorder via `tc netem`. Never panic on bad input.
 
 ### 14.6 Idle and wake latency tests
 
@@ -485,7 +520,7 @@ VM starts and stops go through Proxmox Expert unless Larry runs them with his ow
 
 Same GGUF, prompt, token counts and vCPU count; quiet host; exact commands recorded; 3-run mean plus min and max.
 
-Workload (matches the yardstick's published method): Qwen3-0.6B Q8_0, 34 prompt tokens, 64 generated tokens, greedy, threads 1, 4, 8, 16, 3 runs each. Headline metric is decode tok/s. Prefill reported separately (Nixless v1 prefill is token by token).
+Workload (matches the yardstick's published method): Qwen3-0.6B Q8_0, 34 prompt tokens, 64 generated tokens, greedy, threads 1, 4, 8, 16, 3 runs each. Headline metric is decode tok/s, reported next to the share of the VM's measured memory bandwidth it reaches (the M1 parallel read-sum gives the bandwidth ceiling, run again in the llama.cpp VM with a comparable read test). Prefill reported separately (Nixless v1 prefill is token by token).
 
 Contenders, one VM at a time:
 
@@ -502,10 +537,10 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 | Milestone | Scope | Done when |
 | --- | --- | --- |
 | M0 | Zig freestanding kernel, Multiboot2 header, long mode, serial banner, hybrid ISO, boot check script | Banner on hex under SeaBIOS and OVMF |
-| M1 | Memory map, page tables including RAM above 4 GiB, frame allocator, ACPI, IDT with exception handlers and the panic procedure (6b), local APIC, one-shot timer, SMP with HLT parking and IPI wake, CPUID probe, AVX-512 state | `smp: 16 cores online` and correct RAM total on hex; parallel sum across all cores verified; idle host CPU under 2% of one core; panic tests (14.7) pass |
+| M1 | Memory map, page tables including RAM above 4 GiB, frame allocator, ACPI, IDT with exception handlers and the panic procedure (6b), local APIC, one-shot timer, SMP with HLT parking and IPI wake, CPUID probe, AVX-512 state | `smp: 16 cores online` and correct RAM total on hex; parallel sum across all cores verified; idle host CPU under 2% of one core; panic tests (14.7) pass; TSC frequency calibrated and `uptime_ms` within 1% of the hex clock over 10 minutes; memory bandwidth ceiling measured and recorded |
 | M2 | GGUF parse from the module, tensor table, Q8_0 dequant and one matmul (Zig reference plus AVX2 asm), test vectors vs NumPy | Metadata printed and matmul checksum matches NumPy |
 | M3 | Forward pass, tokenizer, KV cache, greedy decode on Qwen3-0.6B Q8_0, output on serial | 64 greedy tokens match llama.cpp exactly |
-| M4 | PCI, virtio-net, ARP/IPv4/ICMP/DHCP/TCP, HTTP/1.1, SSE, the API | `curl` completions and streamed chat work against the VM on hex |
+| M4 | PCI, virtio-net, ARP/IPv4/ICMP/DHCP/TCP, HTTP/1.1, SSE, the API, in two steps (section 8) | M4a: `curl` completions and streamed chat work against the VM on hex. M4b: the 14.5 test set passes |
 | M5 | Nixless firmware: reset vector, real to protected to long mode, q35 init, PCI enumeration and BAR assignment, fw_cfg (e820, ACPI table-loader, kernel and model files), Multiboot2-format handoff | Same kernel serves `/v1/chat/completions` on hex booted by `-bios nixless-fw.bin` with no GRUB, SeaBIOS or OVMF; GRUB ISO path still passes |
 | M6 | AVX-512 and VNNI kernels, threading tuning, full benchmark run | Benchmark report with exact commands |
 | M7 | More archs and quants (llama 3.x, qwen2, Q4_K, Q6_K, F16); virtio-blk model loading | Golden tests pass for each addition |
@@ -525,6 +560,8 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 11. DECIDED 2026-11-26 (Fred): panic halts with the dump and no auto-reboot; `panic=reboot` is opt-in. See 6b.
 12. Does hex's Ollama store already hold GGUF blobs worth reusing as the model library? (Ollama blobs are GGUF files. Where they live on hex was not checked.)
 13. DECIDED 2026-11-26 (Fred): Larry owns the model library on hex and its sidecar sha256 files, using his own hex access. Proxmox Expert still owns VM config, starts and stops.
+14. Does Proxmox expose the hypervisor TSC-frequency leaf 0x40000010 to the guest? (Checked in M1; PM timer calibration is the fallback.)
+15. Confirm the 1.4 targets and the two-step M4 (proposed 2026-11-26, Larry's recommendation).
 
 ## 18. Future ideas the architecture keeps open (not in v1)
 
