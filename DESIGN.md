@@ -1,6 +1,6 @@
 # Nixless: PRD and design
 
-Status: draft v0.3, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
+Status: draft v0.4, 2026-11-26. No OS code exists yet. This document is the product requirements and design that Larry builds from, in the herdr pane `larry:herdr:nixless` (`/home/pi/nas/Projects/nixless`).
 
 Nixless is Fred Nix's own operating system, written from scratch, from the firmware up. It powers on, runs its own firmware, hands off to its own kernel, loads a language model and serves it over a network API. There is no shell, no userland and no disk requirement. It is an AI appliance that runs as a small, disposable VM on hex.
 
@@ -50,6 +50,8 @@ Fred, and NixNet. A Nixless VM is an inference appliance: boot it, point an HTTP
 | R9 | Beats llama.cpp decode tok/s on hex at equal vCPUs | Goal, measured honestly |
 | R10 | Serial COM1 boot log and debug only | Must |
 | R11 | Good Proxmox neighbor: idle cores HLT, workers park, bounded PAUSE spins, near-zero host CPU when idle (section 0b) | Must |
+| R12 | Fails loud and quiet: every fatal error prints a stable code and CPU state on serial, then halts with the VM idle (section 6b) | Must |
+| R13 | One model per boot, delivered by ISO module, fw_cfg file or read-only virtio-blk disk, sized and checked before use (section 9b) | Must |
 
 ### 1.3 Non-goals (v1)
 
@@ -216,6 +218,34 @@ Planning targets, not measured.
 - Allocator: physical frame allocator over the memory map, plus bump arenas per subsystem. No general heap in v1. Everything is sized at model load, so steady-state inference never allocates.
 - Example: Qwen3-0.6B Q8_0 at ctx 4096 needs about 610 MiB of weights, about 448 MiB of F16 KV cache and about 64 MiB of everything else. A 2 GiB VM is enough. 7B to 8B at Q4_K wants 8 to 16 GiB.
 
+## 6b. Panic and failure behavior
+
+Proposed 2026-11-26, to be confirmed by Fred (open question 11). Principle: when Nixless fails it says so loudly on serial, then goes quiet and cheap. It never spins, never reboots by itself and never leaves the operator guessing.
+
+| Class | Examples | Behavior |
+| --- | --- | --- |
+| Request error | malformed HTTP, prompt longer than ctx, queue full, client gone | HTTP 4xx or 5xx, or close the connection. A counter goes up. Never a panic (14.5). |
+| Boot-fatal | no model, bad GGUF, unsupported tensor type, not enough RAM, no virtio-net | One line `nixless: FATAL <CODE>: <detail>`, then the halt state below. |
+| Kernel panic | CPU exception, failed assertion, stack guard hit, broken invariant | The panic procedure below. |
+| Firmware fatal | no fw_cfg, kernel ELF invalid, empty e820 | `nixless-fw: FATAL <CODE>: <detail>`, then the halt state below. |
+
+Fatal codes are stable strings the boot check greps for: `E_NO_MODEL`, `E_GGUF_BAD`, `E_GGUF_TYPE`, `E_ARCH_UNSUPPORTED`, `E_OOM`, `E_NO_NIC`, `E_NO_LONGMODE`, `E_NO_ACPI`. The list grows with the milestones. A new failure path gets a code in the same commit that adds it.
+
+Panic procedure, on the core that faults:
+
+1. Mask interrupts and take the panic flag with one atomic compare-exchange. A core that loses the race HLT-loops with interrupts masked, so two simultaneous faults print once, not interleaved.
+2. Send an NMI to every other core so they stop computing. Wait a bounded time (a few milliseconds by TSC). A core that does not answer is named in the dump and ignored.
+3. Print on COM1, polled, with no allocation and no locks: `nixless PANIC: <reason>`, version and shorthash, core and APIC id, exception vector and error code, RIP, RSP, RFLAGS, CR0, CR2, CR3, CR4, all general registers, a frame-pointer backtrace as raw addresses (the host resolves them against the ELF with `addr2line`), the model name, the phase (boot, prefill or decode), the request count, and the last 64 lines of an in-RAM log ring.
+4. Halt state: `cli; hlt` in a loop. An NMI wakes the HLT and the handler returns to the loop. The VM stays "running" in Proxmox at near-zero host CPU, which keeps section 0b true even when broken.
+
+Decisions inside this design:
+
+- No automatic reboot by default. A reboot loop would reload the model from hex again and again, burn host CPU and I/O, and hide the failure. A halted VM keeps its RAM, so the state can be inspected through `qm monitor` (`pmemsave`, `info registers`). An opt-in command-line flag `panic=reboot` resets the VM through the ACPI reset register after the dump, for unattended use.
+- Detecting a halted VM from outside: `/health` stops answering and serial shows `PANIC` or `FATAL`. Proxmox still says "running", so the boot check and any monitor must read serial too. A hardware watchdog (QEMU `-watchdog i6300esb`, fed by the BSP loop) would let Proxmox restart a dead appliance. That is out of v1 and kept open.
+- The IDT is installed in M1 before any risky code, with a handler on every vector. Double fault, NMI and machine check run on dedicated IST stacks, so a stack overflow reports instead of triple-faulting. Each per-core stack has a guard page (section 6); hitting it prints `STACK OVERFLOW core N`.
+- Zig's panic handler is overridden to enter the same procedure. The kernel ships as ReleaseSafe (bounds and overflow checks on) with only the hand-tuned matmul and attention kernels unchecked, because model tensors are validated at load (section 9) so hot loops index ranges already proven in bounds. Debug builds are for local runs.
+- Test builds can exit QEMU after the dump through an `isa-debug-exit` device on port 0xF4, so local panic tests finish by themselves. That device is never on the hex VM.
+
 ## 7. Drivers
 
 - Serial (COM1): 16550 UART at I/O 0x3F8, 115200 8N1, polled. Boot log, panics, debug dump only.
@@ -259,6 +289,27 @@ Tokenizer, from GGUF metadata:
 - `tokenizer.ggml.model` (byte-level BPE for qwen2, qwen3, llama-3), `tokens`, `merges`, `token_type`, BOS/EOS ids.
 - Pre-tokenizer split rules hand-written per supported family (no regex engine), chosen by `tokenizer.ggml.pre`.
 - Chat templates hand-written per family (ChatML for qwen, llama-3 format). `tokenizer.chat_template` is logged, not executed.
+
+## 9b. Model delivery
+
+Proposed 2026-11-26. One rule drives it: one VM, one model, one boot. Switching models means changing the VM config and starting it again (the VM is disposable). Nixless never writes to a model.
+
+Where models live: on hex's `hexfiles` volume (`/mnt/hexfiles`, 76 GiB free when checked read-only on 2026-11-26; `/mnt/hexfiles/nixless/` does not exist yet). Proposed library, with placement by Proxmox Expert: `/mnt/hexfiles/nixless/models/<name>.gguf`, named like `qwen3-0.6b-q8_0.gguf`, each next to a `<name>.gguf.sha256`. Model files never go in this repo (it is public); `models/` is git-ignored.
+
+| Mode | Path | Size limit | How it is attached | When |
+| --- | --- | --- | --- | --- |
+| ISO module | A | about 3 GiB (GRUB loads modules below 4 GiB) | `zig build iso -Dmodel=...` bakes it in | M0 to M3, small models, one self-contained ISO |
+| fw_cfg file | B | VM RAM | `args: -fw_cfg name=opt/nixless/model,file=<hex path>` | M5 |
+| virtio-blk, read-only raw disk | A or B | disk size | the GGUF placed at offset 0 of a raw file or volume, attached with `qm set` and `ro=1` | M7 |
+| HTTP fetch at boot | none | none | not in v1 | rejected: needs the whole M4 network stack before the model can load |
+
+Sizing rule: the VM needs weights + KV cache for `ctx` (section 6) + about 64 MiB working memory + 2 to 8 MiB network buffers + the kernel. Plan `-m` at 1.1 times that, rounded up to 256 MiB. The kernel computes the need at boot and halts with `E_OOM need=<bytes> have=<bytes>` instead of faulting. A host-side `zig build size -Dmodel=...` step (planned) prints the number and the matching `qm set` line. Ballooning stays off (`balloon 0`), because weights are used in place and a balloon would take pages out from under them. Host hugepages for the VM are a benchmark knob for M6, not a requirement.
+
+Integrity: the GGUF loader already validates every range before use (section 9). The boot check script verifies the file's sha256 against the sidecar before it attaches the model. An optional command-line flag `model.sha256=<hex>` makes the kernel hash the model at boot, using SHA-NI when the CPU has it. It is off by default because it adds boot time. `/health` reports `model_bytes`.
+
+Load time: on the fw_cfg path the host file is DMA-copied into guest RAM on every boot, so load time is about model size over host read speed (fast from a warm page cache, NVMe-bound when cold). Serial and `/metrics` report `boot_ms` and `model_load_ms`. The boot-to-ready target gets a number only after M5 measures it (open question 5).
+
+Provenance: every benchmark and golden-test record names the model file, its size and its sha256, so a result can be reproduced against the same bytes.
 
 ## 10. Inference engine
 
@@ -384,7 +435,7 @@ Scripted as `scripts/proxmox-boot-check.sh` so it gives the same answer every ti
 1. Build from a clean checkout (`zig build iso`, and `zig build firmware` from M5). Record commit hash and sha256 of each artifact.
 2. Place artifacts on hex (ISO in `/mnt/hexfiles/template/iso/nixless-<shorthash>.iso`; firmware and fw_cfg files in the agreed hex folder) and attach to the nixless VM.
 3. Boot GRUB ISO under SeaBIOS. Capture serial up to 60 seconds.
-4. Assert the log has `nixless <version> <shorthash> booting` and every checkpoint line the current milestone has added (`smp: N cores online`, `gguf: ...`, `net: ip=...`, `nixless ready ...`).
+4. Assert the log has `nixless <version> <shorthash> booting` and every checkpoint line the current milestone has added (`smp: N cores online`, `gguf: ...`, `net: ip=...`, `nixless ready ...`). Fail the run if the log contains `PANIC` or `FATAL`, and keep the log.
 5. Repeat under OVMF.
 6. From M5: boot the q35 VM with the Nixless firmware. Assert `nixless-fw <version> <shorthash>` and then the same kernel lines.
 7. From M4: `curl http://<vm-ip>:8080/health` returns 200 on every path.
@@ -423,6 +474,13 @@ VM starts and stops go through Proxmox Expert unless Larry runs them with his ow
 - Wake latency: time from request arrival to first token with all cores parked, compared with a no-halt debug build. Target added latency under 1 ms.
 - The yardstick OS idle CPU is recorded too, as a contrast.
 
+### 14.7 Failure tests
+
+- Panic tests (from M1, on a debug build with `isa-debug-exit`): null dereference, divide by zero, a failed assertion, stack overflow into the guard page, a deliberate double fault, and a fault on an AP while the BSP is mid-request. Each must print the expected `PANIC` reason, the register dump and a backtrace that `addr2line` resolves, with no triple fault and no interleaved output.
+- After a panic, the idle CPU check (14.1 step 8) must still pass: a panicked VM sits under 2% of one host core.
+- Boot-fatal tests (from M2): missing model, truncated GGUF, unsupported tensor type, VM RAM too small for the model. Each must print its stable `FATAL` code and halt.
+- Fuzzed bad input over the network (14.5) must never reach the panic path.
+
 ## 15. Benchmark plan
 
 Same GGUF, prompt, token counts and vCPU count; quiet host; exact commands recorded; 3-run mean plus min and max.
@@ -435,7 +493,7 @@ Contenders, one VM at a time:
 2. llama.cpp on VM 902 `nixless-linux` (Debian 13, 16 vCPU, `cpu=host`), pinned commit, CPU only. Builds: native (AVX-512) and AVX2-only (`-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF`). Command: `llama-bench -m <gguf> -p 34 -n 64 -t <N> -ngl 0 -r 3`.
 3. The yardstick OS ISO on VM 901, built from its published instructions and run with its built-in benchmark command.
 
-Record per run: hex host load, date and time, commit hashes, compiler versions, `qm config`, full command lines, raw output. Results in `bench/results/<date>.md`.
+Record per run: hex host load, date and time, commit hashes, compiler versions, model file name, size and sha256, `qm config`, full command lines, raw output. Results in `bench/results/<date>.md`.
 
 ## 16. Milestones
 
@@ -444,7 +502,7 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 | Milestone | Scope | Done when |
 | --- | --- | --- |
 | M0 | Zig freestanding kernel, Multiboot2 header, long mode, serial banner, hybrid ISO, boot check script | Banner on hex under SeaBIOS and OVMF |
-| M1 | Memory map, page tables including RAM above 4 GiB, frame allocator, ACPI, local APIC, one-shot timer, SMP with HLT parking and IPI wake, CPUID probe, AVX-512 state | `smp: 16 cores online` and correct RAM total on hex; parallel sum across all cores verified; idle host CPU under 2% of one core |
+| M1 | Memory map, page tables including RAM above 4 GiB, frame allocator, ACPI, IDT with exception handlers and the panic procedure (6b), local APIC, one-shot timer, SMP with HLT parking and IPI wake, CPUID probe, AVX-512 state | `smp: 16 cores online` and correct RAM total on hex; parallel sum across all cores verified; idle host CPU under 2% of one core; panic tests (14.7) pass |
 | M2 | GGUF parse from the module, tensor table, Q8_0 dequant and one matmul (Zig reference plus AVX2 asm), test vectors vs NumPy | Metadata printed and matmul checksum matches NumPy |
 | M3 | Forward pass, tokenizer, KV cache, greedy decode on Qwen3-0.6B Q8_0, output on serial | 64 greedy tokens match llama.cpp exactly |
 | M4 | PCI, virtio-net, ARP/IPv4/ICMP/DHCP/TCP, HTTP/1.1, SSE, the API | `curl` completions and streamed chat work against the VM on hex |
@@ -454,7 +512,7 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 
 ## 17. Open questions
 
-1. Big models on the GRUB path: virtio-blk or HTTP fetch? (The firmware path already removes the limit via fw_cfg.)
+1. PROPOSED 2026-11-26: big models on the GRUB path come from a read-only virtio-blk disk (M7), not HTTP fetch. See 9b. (The firmware path already removes the limit via fw_cfg.)
 2. OVMF on hex: a second VM in pool `nixless`, or one VM switched between firmwares? (Proxmox Expert.)
 3. DECIDED 2026-11-26 (Fred): q35 everywhere, from now on. See 13.3.
 4. DECIDED 2026-11-26 (Fred): the firmware calls a 64-bit kernel entry with the same info pointer. See 2 and 4.2.
@@ -464,6 +522,9 @@ Every milestone ends with the Proxmox boot check (14.1) passing.
 8. Where boot logs and benchmark artifacts live: repo or a nas artifacts folder?
 9. Bearer token on the API in v1?
 10. Search for existing work on each idea in section 18 before calling it new.
+11. Panic default (6b): halt with the dump and no auto-reboot, `panic=reboot` opt-in. Confirm.
+12. Does hex's Ollama store already hold GGUF blobs worth reusing as the model library? (Ollama blobs are GGUF files. Where they live on hex was not checked.)
+13. Who owns the model library on hex and its sidecar sha256 files (Proxmox Expert, or Larry with his own hex access)?
 
 ## 18. Future ideas the architecture keeps open (not in v1)
 

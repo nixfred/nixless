@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="visibility: private" src="https://img.shields.io/badge/visibility-private-0c9793?style=flat-square&labelColor=070707">
+  <img alt="visibility: public" src="https://img.shields.io/badge/visibility-public-0c9793?style=flat-square&labelColor=070707">
   <img alt="license: TBD" src="https://img.shields.io/badge/license-TBD-52ca9a?style=flat-square&labelColor=070707">
   <img alt="status: exploration" src="https://img.shields.io/badge/status-exploration-89e0b7?style=flat-square&labelColor=070707">
 </p>
