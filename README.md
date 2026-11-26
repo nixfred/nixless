@@ -13,7 +13,7 @@
 Nixless is Fred's operating-system exploration: **model-as-appliance VMs** on hex (his Proxmox box).
 A VM whose whole job is to be the model, with nothing else on it.
 
-M0 and M1 are done, and M1 passed on hex (16 cores, AVX-512, idle cost 0.03% of one host core). M2 is done and passed on hex: the kernel reads a GGUF model handed over as a boot module, validates it, and runs a Q8_0 matrix-vector product that matches NumPy exactly, in plain Zig and in AVX2 assembly. No inference yet.
+M0 and M1 are done, and M1 passed on hex (16 cores, AVX-512, idle cost 0.03% of one host core). M2 is done and passed on hex: the kernel reads a GGUF model handed over as a boot module, validates it, and runs a Q8_0 matrix-vector product that matches NumPy exactly, in plain Zig and in AVX2 assembly. M3 has begun: the kernel reads a Qwen3 model's hyperparameters and checks every tensor's type and shape at boot (step a, passing locally on the real Qwen3-0.6B). No inference yet.
 
 Build and check: `zig build iso`, then `scripts/qemu-boot-check.sh` (Zig 0.16.0 via mise; see [DESIGN.md](DESIGN.md) section 13.1).
 

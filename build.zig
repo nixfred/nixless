@@ -83,7 +83,9 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
     });
-    test_mod.addAnonymousImport("tiny.gguf", .{ .root_source_file = b.path("tests/fixtures/tiny.gguf") });
+    for ([_][]const u8{ "tiny", "mini-qwen3", "bad-arch", "qwen3-no-hparams", "qwen3-bad-shape", "qwen3-missing" }) |name| {
+        test_mod.addAnonymousImport(b.fmt("{s}.gguf", .{name}), .{ .root_source_file = b.path(b.fmt("tests/fixtures/{s}.gguf", .{name})) });
+    }
     const tests = b.addTest(.{ .root_module = test_mod });
     const test_step = b.step("test", "Run the host-side GGUF parser tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);

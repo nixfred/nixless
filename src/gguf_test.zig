@@ -4,6 +4,10 @@
 const std = @import("std");
 const gguf = @import("gguf.zig");
 
+test {
+    _ = @import("qwen3_test.zig");
+}
+
 const fixture: []const u8 = @embedFile("tiny.gguf");
 var model: gguf.Model = undefined;
 

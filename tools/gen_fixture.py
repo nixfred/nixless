@@ -95,3 +95,71 @@ t.write_header_to_file()
 t.write_kv_data_to_file()
 t.write_tensors_to_file()
 t.close()
+
+
+# A small synthetic Qwen3: the real tensor names, the real shape quirks (attention
+# width n_head*head_dim differs from n_embd, per-head q/k norms, no output.weight so
+# the head is tied to token_embd), random Q8_0 weights. Used by the host tests for the
+# hyperparameter and inventory checks, and later as a layer-by-layer forward-pass case.
+N_LAYER, N_EMBD, N_HEAD, N_KV, HEAD_DIM, N_FF, VOCAB = 2, 64, 4, 2, 32, 128, 256
+
+
+def write_mini_qwen3(path, *, arch="qwen3", drop=None, widen=None, tensors=True, keys=True):
+    """`drop` omits one tensor; `widen` is (name, extra) and makes that tensor's
+    first dimension `extra` elements wider (a shape error)."""
+    r = np.random.default_rng(20261127)
+    w = GGUFWriter(str(path), arch)
+    w.add_name("mini")
+    if keys and arch == "qwen3":
+        p = "qwen3"
+        w.add_uint32(f"{p}.block_count", N_LAYER)
+        w.add_uint32(f"{p}.context_length", 512)
+        w.add_uint32(f"{p}.embedding_length", N_EMBD)
+        w.add_uint32(f"{p}.feed_forward_length", N_FF)
+        w.add_uint32(f"{p}.attention.head_count", N_HEAD)
+        w.add_uint32(f"{p}.attention.head_count_kv", N_KV)
+        w.add_float32(f"{p}.rope.freq_base", 1000000.0)
+        w.add_float32(f"{p}.attention.layer_norm_rms_epsilon", 1e-6)
+        w.add_uint32(f"{p}.attention.key_length", HEAD_DIM)
+        w.add_uint32(f"{p}.attention.value_length", HEAD_DIM)
+    if not tensors:
+        w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+        return
+
+    def add(name, cols, rows=None):
+        if name == drop:
+            return
+        if widen and widen[0] == name:
+            cols += widen[1]
+        if rows is None:  # F32 vector
+            w.add_tensor(name, (1.0 + 0.1 * r.standard_normal(cols)).astype(np.float32))
+        else:
+            w.add_tensor(name, quantize((0.2 * r.standard_normal((rows, cols))).astype(np.float32), Q.Q8_0), raw_dtype=Q.Q8_0)
+
+    add("token_embd.weight", N_EMBD, VOCAB)
+    add("output_norm.weight", N_EMBD)
+    for i in range(N_LAYER):
+        b = f"blk.{i}"
+        add(f"{b}.attn_norm.weight", N_EMBD)
+        add(f"{b}.attn_q.weight", N_EMBD, N_HEAD * HEAD_DIM)
+        add(f"{b}.attn_k.weight", N_EMBD, N_KV * HEAD_DIM)
+        add(f"{b}.attn_v.weight", N_EMBD, N_KV * HEAD_DIM)
+        add(f"{b}.attn_q_norm.weight", HEAD_DIM)
+        add(f"{b}.attn_k_norm.weight", HEAD_DIM)
+        add(f"{b}.attn_output.weight", N_HEAD * HEAD_DIM, N_EMBD)
+        add(f"{b}.ffn_norm.weight", N_EMBD)
+        add(f"{b}.ffn_gate.weight", N_EMBD, N_FF)
+        add(f"{b}.ffn_up.weight", N_EMBD, N_FF)
+        add(f"{b}.ffn_down.weight", N_FF, N_EMBD)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+write_mini_qwen3(fx / "mini-qwen3.gguf")
+write_mini_qwen3(fx / "qwen3-bad-shape.gguf", widen=("blk.1.attn_q.weight", 32))
+write_mini_qwen3(fx / "qwen3-missing.gguf", drop="blk.1.ffn_down.weight")
+write_mini_qwen3(fx / "bad-arch.gguf", arch="llama", tensors=False)
+write_mini_qwen3(fx / "qwen3-no-hparams.gguf", keys=False, tensors=False)
+print("wrote mini-qwen3 fixtures", file=sys.stderr)

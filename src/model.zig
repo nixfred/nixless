@@ -4,11 +4,17 @@
 const cpu = @import("cpu.zig");
 const gguf = @import("gguf.zig");
 const mb2 = @import("mb2.zig");
+const qwen3 = @import("qwen3.zig");
 const quant = @import("quant.zig");
 const serial = @import("serial.zig");
 const std = @import("std");
 
 var model: gguf.Model = undefined;
+
+/// The qwen3 weights and hyperparameters, valid when `have_qwen` is set (any file
+/// that is not the test fixture must be a qwen3 or the kernel stops at load).
+pub var qwen: qwen3.Weights = undefined;
+pub var have_qwen = false;
 
 pub fn fatal(code: []const u8, detail: []const u8) noreturn {
     serial.write("nixless: FATAL ");
@@ -51,6 +57,23 @@ pub fn load(info: *const mb2.Info) *const gguf.Model {
         cpu.haltForever();
     }
     gguf.print(&model);
+
+    const arch = model.findString("general.architecture") orelse fatal("E_ARCH_UNSUPPORTED", "no general.architecture key");
+    if (!std.mem.eql(u8, arch, "nixless-test")) {
+        var p: qwen3.Problem = .{};
+        qwen3.fromModel(&model, &qwen, &p) catch {
+            serial.write("nixless: FATAL ");
+            serial.write(p.code);
+            serial.write(": ");
+            serial.write(p.subject);
+            serial.write(": ");
+            serial.write(p.what);
+            serial.write("\n");
+            cpu.haltForever();
+        };
+        qwen3.print(&qwen);
+        have_qwen = true;
+    }
     return &model;
 }
 
