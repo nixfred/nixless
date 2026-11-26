@@ -13,7 +13,9 @@
 Nixless is Fred's operating-system exploration: **model-as-appliance VMs** on hex (his Proxmox box).
 A VM whose whole job is to be the model, with nothing else on it.
 
-No OS, kernel or inference code exists yet. Ideas come later.
+M0 is booting: a small Zig kernel prints its banner under SeaBIOS and OVMF in QEMU. No inference code exists yet.
+
+Build and check: `zig build iso`, then `scripts/qemu-boot-check.sh` (Zig 0.16.0 via mise; see [DESIGN.md](DESIGN.md) section 13.1).
 
 ## Design
 

@@ -31,11 +31,10 @@ Fred's rule (2026-11-26), from a real hex observation: a bare-metal LLM OS that 
 
 ## Start here: M0
 
-M0 is the next thing to build and nothing else (scope and exit in section 16). It needs no network, no model and no SMP.
+M0 is the only thing being built (scope and exit in section 16). It needs no network, no model and no SMP.
 
-- Toolchain on larry, checked 2026-11-26: present are `grub-mkrescue` (i386-pc and x86_64-efi), `nasm`, `gdb`, `addr2line` and `/dev/kvm`. Missing are `zig` (no Debian 13 package), `qemu-system-x86`, `xorriso` and `mtools` (the last three and `ovmf` are in apt). The Zig version gets pinned in the repo when M0 starts.
-- hex: the q35, virtio-net and OVMF-variant request went to Proxmox Expert on 2026-11-26. Coding M0 does not wait for it; the boot check does.
-- First proof is local: the ISO boots under QEMU with KVM on larry and prints the banner. Then the hex boot check (14.1) under SeaBIOS and OVMF.
+- Status 2026-11-26: the Zig kernel, Multiboot2 stub, hybrid ISO and `scripts/qemu-boot-check.sh` exist. The banner prints under SeaBIOS and OVMF in local QEMU on q35. Not yet done: the same check on hex, which needs the q35 VM and OVMF variant from Proxmox Expert (request sent 2026-11-26).
+- Build: `zig build iso`, then `scripts/qemu-boot-check.sh [seabios|ovmf]`. Toolchain notes are in 13.1. Larry's user is not in the `kvm` group, so local runs use TCG until that changes; the script uses KVM when `/dev/kvm` is writable.
 
 ## 1. Product requirements
 
@@ -163,7 +162,7 @@ References: Intel SDM Vol. 3, AMD APM Vol. 2, osdev wiki.
 
 1. Enter in 32-bit protected mode per Multiboot2. Save the info pointer.
 2. Check CPUID for long mode, halt with a serial message if missing.
-3. Build boot page tables: identity map the first 4 GiB with 2 MiB pages plus a higher-half kernel mapping.
+3. Build boot page tables: identity map the first 4 GiB with 2 MiB pages plus a higher-half kernel mapping. (M0 is identity only, linked at 1 MiB with code model `small`; the higher half lands in M1 with the memory map.)
 4. Enable PAE, set EFER.LME and NXE, load CR3, enable paging, far jump to 64-bit code.
 5. 64-bit GDT, stack, zero BSS, enable SSE, call `kmain`.
 6. Enable AVX and AVX-512 state: CR4.OSXSAVE, XCR0 bits for x87, SSE, AVX, opmask, ZMM_Hi256, Hi16_ZMM when CPUID reports them (leaf 0xD).
@@ -409,8 +408,10 @@ Base `http://<ip>:8080`, JSON bodies. No auth in v1 (private network); an option
 
 ### 13.1 Toolchain
 
-- Zig, one pinned stable release recorded in `build.zig.zon` and the README (decided in M0).
-- Kernel target `x86_64-freestanding-none`, code model `kernel`, red zone off, no SSE in early boot code.
+- Zig 0.16.0, pinned in `mise.toml` and `build.zig.zon` (decided in M0). Zig has no Debian 13 package, so mise installs it.
+- Zig 0.16 needs its cache on local disk: the NAS NFS mount makes its atomic rename fail with EINVAL. Set `ZIG_LOCAL_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR` to a local path (for example `~/.cache/nixless-zig/{local,global}`) before `zig build`.
+- The kernel uses the LLVM backend (`use_llvm = true`): with SSE disabled the self-hosted x86 backend cannot encode what the standard library emits.
+- Kernel target `x86_64-freestanding-none`, red zone off, no SSE in early boot code, code model `small` in M0 and `kernel` once the higher half exists (M1).
 - Firmware: Zig plus asm, built as a flat binary with a linker script that places the reset vector at the end of the image. 16-bit and 32-bit entry code in asm.
 - `grub-mkrescue` with `grub-pc-bin`, `grub-efi-amd64-bin`, `xorriso`, `mtools` for the hybrid ISO.
 - QEMU with KVM, plus OVMF for UEFI tests.

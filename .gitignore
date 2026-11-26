@@ -1,2 +1,5 @@
 models/
 *.gguf
+zig-out/
+.zig-cache/
+bootlogs/

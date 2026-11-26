@@ -1,0 +1,14 @@
+.{
+    .name = .nixless,
+    .version = "0.0.1",
+    .fingerprint = 0x524e5699d85a157e,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "linker.ld",
+        "grub.cfg",
+        "src",
+        "scripts",
+    },
+}
